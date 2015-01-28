@@ -111,7 +111,6 @@ For detail, see `comment-dwim'."
 	 (list (format "\\(%s\\)" CODE) 1 font-lock-preprocessor-face t)
 	 )
 	)
-  (format "\\([@&]%s%s\\)" SP IRIREF)
   )
 
 ;;(define-generic-mode 'shexc-mode
