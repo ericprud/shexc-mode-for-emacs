@@ -2,7 +2,7 @@
 
 ;; Copyright (c) 2003-2007 Hugo Haas <hugo@larve.net>
 ;; re-worked and re-published by kurtjx (c) 2010 <kurtjx@gmail.com>
-;; repurposed fro ShExC (c) 2015 <eric@w3.org>
+;; repurposed for ShExC (c) 2015 <eric@w3.org>
 
 ;; For documentation on ShExC, see:
 ;; https://www.w3.org/2014/03/ShEx-subm/Primer
@@ -42,7 +42,7 @@ For detail, see `comment-dwim'."
        (STRING_LITERAL1	(format "'\\(?:[^\x27\ \x5C\ \xA\ \xD\ ]\\|%s\\|%s\\)*'" ECHAR UCHAR)) ; #x27=' #x5C=\ #xA=new line #xD=carriage return
        (STRING_LITERAL2	(format "\"\\(?:[^\x22\ \x5C\ \xA\ \xD\ ]\\|%s\\|%s\\)*\"" ECHAR UCHAR)) ; #x22=" #x5C=\ #xA=new line #xD=carriage return
        (STRING_LITERAL_LONG1	(format "'''\\(?:\\(?:'\\|''\\)?\\([^'\\\\]\\|%s\\|%s\\)\\)*'''" ECHAR UCHAR))
-       (STRING_LITERAL_LONG2	(format "\"\"\"\\(?:\\(?:\"\\|\"\"\\)?\\([^\"\\\\]\\|%s\\|%s\\)\\)*\"\"\"" ECHAR UCHAR))
+       (STRING_LITERAL_LONG2	(format "\"\"\"\\(?:\\(?:\"\\|\"\"\\)?\\(?:[^\"\\\\]\\|%s\\|%s\\)\\)*\"\"\"" ECHAR UCHAR))
 
        (WS		"[\x20\ \x9\ \xD\ \xA\ ]") ; #x20=space #x9=character tabulation #xD=carriage return #xA=new line
        (ANON		(format "\\(?:\\[%s*\\]\\)" WS))
@@ -62,7 +62,10 @@ For detail, see `comment-dwim'."
        (PNAME_LN	(format "%s%s" PNAME_NS PN_LOCAL))
        (PrefixedName	(format "\\(?:%s\\|%s\\)" PNAME_LN PNAME_NS))
        (BlankNode	(format "\\(?:%s\\|%s\\)" BLANK_NODE_LABEL ANON))
+       (String		(format "\\(?:%s\\|%s\\|%s\\|%s\\)" STRING_LITERAL1 STRING_LITERAL2 STRING_LITERAL_LONG1 STRING_LITERAL_LONG2))
        (CODE		(format "%%%s?{\\(?:[^%%\\\\]\\|\\\\%%\\)*%%}" PN_PREFIX))
+       (comment		"\\(?:#[^\r\n]*[\r\n]\\)")
+       (SP		(format "\\(?:\\(?:[ \t\r\n]\\|%s\\)*\\)" comment)) ; "SP" scans better than "skip"
        )
   (setq shexc-highlights
 ; overly-simlified building blocks, mostly from <http://www.w3.org/TR/turtle/#terminals>:
@@ -83,28 +86,32 @@ For detail, see `comment-dwim'."
 	 (list (format "\\(%s\\)" BlankNode) 1 font-lock-function-name-face t)
 
          ; @SP*<Shape> | &SP*<Shape>
-	 (list (format "\\([@&]\\(?:[ \n\t]*\\|#\\S-*?\n\\)*%s\\)" IRIREF) 1 font-lock-variable-name-face t)
+	 (list (format "\\([@&]%s%s\\)" SP IRIREF) 1 font-lock-variable-name-face t)
+	 ;(list (format "\\([@&]\\(?:[ \n\t]*\\|%s\\)*%s\\)" comment IRIREF) 1 font-lock-variable-name-face t)
          ; @SP*my:Shape | &SP*my:Shape
-	 (list (format "\\([@&]\\(?:[ \n\t]*\\|#\\S-*?\n\\)*%s\\)" PrefixedName) 1 font-lock-variable-name-face t)
+	 (list (format "\\([@&]%s%s\\)" SP PrefixedName) 1 font-lock-variable-name-face t)
          ; <Shape>SP*{...}
-	 (list (format "\\(%s\\)[ \n\t]*{" IRIREF) 1 font-lock-variable-name-face t)
+	 (list (format "\\(%s\\)%s{" IRIREF SP) 1 font-lock-variable-name-face t)
          ; my:ShapeSP*{...}
-	 (list (format "\\(%s\\)[ \n\t]*{" PrefixedName) 1 font-lock-variable-name-face t)
+	 (list (format "\\(%s\\)%s{" PrefixedName SP) 1 font-lock-variable-name-face t)
          ; start=SP*<Shape>
-	 (list (format "start[ \n\t]*=[ \n\t]*\\(%s\\)" IRIREF) 1 font-lock-variable-name-face t)
+	 (list (format "start%s=%s\\(%s\\)" SP SP IRIREF) 1 font-lock-variable-name-face t)
          ; start=SP*my:Shape
-	 (list (format "start[ \n\t]*=[ \n\t]*\\(%s\\)" PrefixedName) 1 font-lock-variable-name-face t)
+	 (list (format "start%s=%s\\(%s\\)" SP SP PrefixedName) 1 font-lock-variable-name-face t)
 
-	 (list "\\(\\\".*?\\\"\\)" 1 font-lock-string-face t)
+	 ; @@ doesn't work for long lines
+	 ;(list "\\(\\\".*?\\\"\\)" 1 font-lock-string-face t)
+	 (list (format "\\(%s\\)" String) 1 font-lock-string-face t) ; @@ There's some other string stuff going on somewhere
          ; Bug: some trailing characters are highlighted; restricting comments regexp
          ; ("\\(#.*\\)" 1 font-lock-comment-face t)
-	 (list "^\\s-*\\(#.*\\)" 1 font-lock-comment-face t)
+	 ;(list "^\\s-*\\(#.*\\)" 1 font-lock-comment-face t)
+	 (list (format "^\\(%s\\)" comment) 1 font-lock-comment-face t)
 
          ; semantic actions
 	 (list (format "\\(%s\\)" CODE) 1 font-lock-preprocessor-face t)
 	 )
 	)
-  (format "\\(%s\\)%s" PNAME_NS PN_LOCAL)
+  (format "\\([@&]%s%s\\)" SP IRIREF)
   )
 
 ;;(define-generic-mode 'shexc-mode
