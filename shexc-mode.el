@@ -68,7 +68,7 @@ For detail, see `comment-dwim'."
   (setq shexc-highlights
 	(list
 	 ;; keywords (how to do case insensitive?)
-	 (list "\\<\\(prefix\\|PREFIX\\|start\\|START\\|a\\)\\>" 1 font-lock-keyword-face t)
+	 (list "\\<\\(prefix\\|PREFIX\\|start\\|START\\|a\\|AND\\|OR\\|ABSTRACT\\|EXTENDS\\|RESTRICTS\\|EXTRA\\)\\>" 1 font-lock-keyword-face t)
 	 ;; highlight some punctuation
 	 (list "\\([.?*+&]\\)" 1 font-lock-keyword-face t)
 
