@@ -4,7 +4,7 @@ originally created as N3-mode by Hugo Haas and Dave Pawson.
 
 Put shexc-mode.el somewhere emacs can find it (e.g. ~/.emacs.d/vendor/)
 And add the following to your .emacs file:
-
+``` lisp
 ;;
 ;; shexc mode
 ;;
@@ -28,3 +28,4 @@ And add the following to your .emacs file:
 ;; If you want to make it load just a little faster;
 ;; C-x f shexc-mode.el
 ;; M-x byte-compile-file shexc-mode.el
+```
