@@ -68,7 +68,38 @@ For detail, see `comment-dwim'."
   (setq shexc-highlights
 	(list
 	 ;; keywords (how to do case insensitive?)
-	 (list "\\<\\(prefix\\|PREFIX\\|start\\|START\\|a\\|AND\\|OR\\|ABSTRACT\\|EXTENDS\\|RESTRICTS\\|EXTRA\\)\\>" 1 font-lock-keyword-face t)
+	 (list (concat "\\<\\("
+                       "[Bb][Aa][Ss][Ee]\\|"
+                       "[Pp][Rr][Ee][Ff][Ii][Xx]\\|"
+                       "[iI][mM][pP][oO][rR][tT]\\|"
+                       "[sS][tT][aA][rR][tT]\\|"
+                       "[eE][xX][tT][eE][rR][nN][aA][lL]\\|"
+                       "[Aa][Bb][Ss][Tt][Rr][Aa][Cc][Tt]\\|"
+                       "[Rr][Ee][Ss][Tt][Rr][Ii][Cc][Tt][Ss]\\|"
+                       "[Ee][Xx][Tt][Ee][Nn][Dd][Ss]\\|"
+                       "[Cc][Ll][Oo][Ss][Ee][Dd]\\|"
+                       "[Ee][Xx][Tt][Rr][Aa]\\|"
+                       "[Ll][Ii][Tt][Ee][Rr][Aa][Ll]\\|"
+                       "[Bb][Nn][Oo][Dd][Ee]\\|"
+                       "[Ii][Rr][Ii]\\|"
+                       "[Nn][Oo][Nn][Ll][Ii][Tt][Ee][Rr][Aa][Ll]\\|"
+                       "[Aa][Nn][Dd]\\|"
+                       "[Oo][Rr]\\|"
+                       "[No][Oo][Tt]\\|"
+                       "[Oo][Nn]\\|"
+                       "[Ss][Hh][Aa][Pp][Ee]\\|"
+                       "[Ee][Xx][Pp][Rr][Ee][Ss][Ss][Ii][Oo][Nn]\\|"
+                       "[Mm][Ii][Nn][Ii][Nn][Cc][Ll][Uu][Ss][Ii][Vv][Ee]\\|"
+                       "[Mm][Ii][Nn][Ee][Xx][Cc][Ll][Uu][Ss][Ii][Vv][Ee]\\|"
+                       "[Mm][Aa][Xx][Ii][Nn][Cc][Ll][Uu][Ss][Ii][Vv][Ee]\\|"
+                       "[Mm][Aa][Xx][Ee][Xx][Cc][Ll][Uu][Ss][Ii][Vv][Ee]\\|"
+                       "[Ll][Ee][Nn][Gg][Tt][Hh]\\|"
+                       "[Mm][Ii][Nn][Ll][Ee][Nn][Gg][Tt][Hh]\\|"
+                       "[Mm][Aa][Xx][Ll][Ee][Nn][Gg][Tt][Hh]\\|"
+                       "[Tt][Oo][Tt][Aa][Ll][Dd][Ii][Gg][Ii][Tt][Ss]\\|"
+                       "[Ff][Rr][Aa][Cc][Tt][Ii][Oo][Nn][Dd][Ii][Gg][Ii][Tt][Ss]\\|"
+                       "a"
+                       "\\)\\>") 1 font-lock-keyword-face t)
 	 ;; highlight some punctuation
 	 (list "\\([.?*+&]\\)" 1 font-lock-keyword-face t)
 
