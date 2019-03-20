@@ -141,7 +141,7 @@ For detail, see `comment-dwim'."
          )
         )
   (setq shex-imenu-generic-expression
-        (list (list nil (format "^%s\\(%s\\)" SP IRIREF) 1)))
+        (list (list nil (format "^\\(%s\\|%s\\)" IRIREF PrefixedName) 1)))
   )
 
 
