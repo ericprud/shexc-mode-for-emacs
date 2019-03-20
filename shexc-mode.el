@@ -1,8 +1,9 @@
-;;; shexc-mode.el --- mode for ShExC
+﻿;;; shexc-mode.el --- mode for ShExC
 
 ;; Copyright (c) 2003-2007 Hugo Haas <hugo@larve.net>
 ;; re-worked and re-published by kurtjx (c) 2010 <kurtjx@gmail.com>
 ;; repurposed for ShExC (c) 2015 <eric@w3.org>
+;; added imenu support (c) 2019 <vladimir.alexiev@ontotext.com>
 
 ;; For documentation on ShExC, see:
 ;; https://www.w3.org/2014/03/ShEx-subm/Primer
@@ -17,6 +18,7 @@
 ;; What it does now:
 ;; - Syntax highlighting
 ;; - comment/uncomment block with M-;
+;; - index of shape definitions (imenu) and panel on the right (imenu-list)
 
 ;;; Code:
 
@@ -54,7 +56,7 @@ For detail, see `comment-dwim'."
        (PN_PREFIX	(format "\\(?:%s\\(?:\\(?:%s\\|\\.\\)*%s\\)?\\)" PN_CHARS_BASE PN_CHARS PN_CHARS))
        (PNAME_NS	(format "\\(?:%s?:\\)" PN_PREFIX))
        (PN_LOCAL_ESC	"\\(?:\\\\[_~.-!$&'()*+,;=/?#@%]\\)")
-       (PERCENT 	(format "\\(?:%%%s%s\\)" HEX HEX))
+       (PERCENT         (format "\\(?:%%%s%s\\)" HEX HEX))
        (PLX		(format "\\(?:%s\\|%s\\)" PERCENT PN_LOCAL_ESC))
        (PN_LOCAL	(format "\\(?:\\(?:%s\\|:\\|[0-9]\\|%s\\)\\(?:\\(?:%s\\|\\.\\|:\\|%s\\)*\\(?:%s\\|:\\|%s\\)\\)?\\)" PN_CHARS_U PLX PN_CHARS PLX PN_CHARS PLX))
        (PNAME_LN	(format "%s%s" PNAME_NS PN_LOCAL))
@@ -66,8 +68,8 @@ For detail, see `comment-dwim'."
        (SP		(format "\\(?:\\(?:[ \t\r\n]\\|%s\\)*\\)" comment)) ; "SP" scans better than "skip"
        )
   (setq shexc-highlights
-	(list
-	 ;; keywords (how to do case insensitive?)
+        (list
+         ;; keywords (how to do case insensitive?)
 	 (list (concat "\\<\\("
                        "[Bb][Aa][Ss][Ee]\\|"
                        "[Pp][Rr][Ee][Ff][Ii][Xx]\\|"
@@ -100,53 +102,61 @@ For detail, see `comment-dwim'."
                        "[Ff][Rr][Aa][Cc][Tt][Ii][Oo][Nn][Dd][Ii][Gg][Ii][Tt][Ss]\\|"
                        "a"
                        "\\)\\>") 1 font-lock-keyword-face t)
-	 ;; highlight some punctuation
-	 (list "\\([.?*+&]\\)" 1 font-lock-keyword-face t)
+         ;; highlight some punctuation
+         (list "\\([.?*+&]\\)" 1 font-lock-keyword-face t)
 
-	 ;; PREFIX (foo:) <bar>
-	 (list (format "\\(?:prefix\\|PREFIX\\)%s\\(%s\\)" SP PNAME_NS) 1 font-lock-type-face t)
-	 ;; (foo:)bar
-	 (list (format "\\(%s\\)%s" PNAME_NS PN_LOCAL) 1 font-lock-type-face t)
-	 ;; foo:(bar)
-	 (list (format "%s\\(%s\\)" PNAME_NS PN_LOCAL) 1 font-lock-constant-face t)
-	 ;; <foo>
-	 (list (format "\\(%s\\)" IRIREF) 1 font-lock-function-name-face t)
-	 ;; _:foo
-	 (list (format "\\(%s\\)" BlankNode) 1 font-lock-function-name-face t)
+         ;; PREFIX (foo:) <bar>
+         (list (format "\\(?:prefix\\|PREFIX\\)%s\\(%s\\)" SP PNAME_NS) 1 font-lock-type-face t)
+         ;; (foo:)bar
+         (list (format "\\(%s\\)%s" PNAME_NS PN_LOCAL) 1 font-lock-type-face t)
+         ;; foo:(bar)
+         (list (format "%s\\(%s\\)" PNAME_NS PN_LOCAL) 1 font-lock-constant-face t)
+         ;; <foo>
+         (list (format "\\(%s\\)" IRIREF) 1 font-lock-function-name-face t)
+         ;; _:foo
+         (list (format "\\(%s\\)" BlankNode) 1 font-lock-function-name-face t)
 
-	 ;; navigational labels are in variable-name-face.
-	 ;; @SP*<Shape> | &SP*<Shape>
-	 (list (format "\\([@&]%s%s\\)" SP IRIREF) 1 font-lock-variable-name-face t)
-	 ;; @SP*my:Shape | &SP*my:Shape
-	 (list (format "\\([@&]%s%s\\)" SP PrefixedName) 1 font-lock-variable-name-face t)
-	 ;; <Shape>SP*{...}
-	 (list (format "\\(%s\\)%s{" IRIREF SP) 1 font-lock-variable-name-face t)
-	 ;; my:ShapeSP*{...}
-	 (list (format "\\(%s\\)%s{" PrefixedName SP) 1 font-lock-variable-name-face t)
-	 ;; start=SP*<Shape>
-	 (list (format "start%s=%s\\(%s\\)" SP SP IRIREF) 1 font-lock-variable-name-face t)
-	 ;; start=SP*my:Shape
-	 (list (format "start%s=%s\\(%s\\)" SP SP PrefixedName) 1 font-lock-variable-name-face t)
-	 ;; "foo" 'foo' """foo\nb"a""r""" '''foo\nb'a''r'''
-	 (list (format "\\(%s\\)" String) 1 font-lock-string-face t)
+         ;; navigational labels are in variable-name-face.
+         ;; @SP*<Shape> | &SP*<Shape>
+         (list (format "\\([@&]%s%s\\)" SP IRIREF) 1 font-lock-variable-name-face t)
+         ;; @SP*my:Shape | &SP*my:Shape
+         (list (format "\\([@&]%s%s\\)" SP PrefixedName) 1 font-lock-variable-name-face t)
+         ;; <Shape>SP*{...}
+         (list (format "\\(%s\\)%s{" IRIREF SP) 1 font-lock-variable-name-face t)
+         ;; my:ShapeSP*{...}
+         (list (format "\\(%s\\)%s{" PrefixedName SP) 1 font-lock-variable-name-face t)
+         ;; start=SP*<Shape>
+         (list (format "start%s=%s\\(%s\\)" SP SP IRIREF) 1 font-lock-variable-name-face t)
+         ;; start=SP*my:Shape
+         (list (format "start%s=%s\\(%s\\)" SP SP PrefixedName) 1 font-lock-variable-name-face t)
+         ;; "foo" 'foo' """foo\nb"a""r""" '''foo\nb'a''r'''
+         (list (format "\\(%s\\)" String) 1 font-lock-string-face t)
 
-	 ;; Bug: some trailing characters are highlighted; restricting comments regexp so add '^'
-	 ;;(list (format "\\(%s\\)" comment) 1 font-lock-comment-face t)
-	 (list (format "^\\(%s\\)" comment) 1 font-lock-comment-face t)
+         ;; Bug: some trailing characters are highlighted; restricting comments regexp so add '^'
+         ;;(list (format "\\(%s\\)" comment) 1 font-lock-comment-face t)
+         (list (format "^\\(%s\\)" comment) 1 font-lock-comment-face t)
 
-	 ;; semantic actions
-	 (list (format "\\(%s\\)" CODE) 1 font-lock-preprocessor-face t)
-	 )
-	)
+         ;; semantic actions
+         (list (format "\\(%s\\)" CODE) 1 font-lock-preprocessor-face t)
+         )
+        )
+  (setq shex-imenu-generic-expression
+        (list (list nil (format "^%s\\(%s\\)" SP IRIREF) 1)))
   )
 
+
 ;;(define-generic-mode 'shexc-mode
-(define-derived-mode shexc-mode prog-mode
+(define-derived-mode shexc-mode prog-mode "ShEx"
+  "Mode for ShExC documents."
+
   ;; setup tab key not working :/
   ;;(setq c-basic-offset 4)
 
   ;; syntax highlighting
   (setq font-lock-defaults '(shexc-highlights))
+
+  ;; index of shape definitions (imenu) and panel on the right (imenu-list)
+  (set (make-local-variable 'imenu-generic-expression) shex-imenu-generic-expression)
 
   ;; modify the keymap M-; comments/uncomments region
   (define-key shexc-mode-map [remap comment-dwim] 'shexc-comment-dwim)
@@ -154,7 +164,12 @@ For detail, see `comment-dwim'."
   (modify-syntax-entry ?# "< b" shexc-mode-syntax-table)
   (modify-syntax-entry ?\n "> b" shexc-mode-syntax-table)
 
-  ;; description
-  "Mode for ShExC documents."
-)
+  ;; "." is a symbol char
+  (modify-syntax-entry ?. "_" shexc-mode-syntax-table)
 
+  ;; punctuation. I don't want these to be picked up by (thing-at-point 'symbol)
+  (modify-syntax-entry ?* "." shexc-mode-syntax-table)
+  (modify-syntax-entry ?+ "." shexc-mode-syntax-table)
+  
+  ;; (run-mode-hooks 'shexc-mode-hook) ;; automatically done by define-derived-mode
+)
