@@ -10,7 +10,7 @@ And add the following to your .emacs file:
 ;; shexc mode
 ;;
 
-(add-to-list 'load-path "{path}/shexc-mode.el")
+(add-to-list 'load-path "{folder that contains shexc-mode.el}")
 (autoload 'shexc-mode "shexc-mode" "Major mode for ShExC (ShEx Compact Syntax) files" t)
 
 ;; Turn on font lock when in shexc mode
