@@ -111,8 +111,8 @@ For detail, see `comment-dwim'."
          (list (format "\\(%s\\)%s" PNAME_NS PN_LOCAL) 1 font-lock-type-face t)
          ;; foo:(bar)
          (list (format "%s\\(%s\\)" PNAME_NS PN_LOCAL) 1 font-lock-constant-face t)
-         ;; <foo>
-         (list (format "\\(%s\\)" IRIREF) 1 font-lock-function-name-face t)
+         ;; <foo> or foo:bar at beginning of line
+         (list (format "^\\(%s\\|%s\\)" IRIREF PrefixedName) 1 font-lock-function-name-face t)
          ;; _:foo
          (list (format "\\(%s\\)" BlankNode) 1 font-lock-function-name-face t)
 
