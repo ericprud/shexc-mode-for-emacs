@@ -3,9 +3,9 @@ This is an emacs major mode for editing ShExC documents
 originally created as N3-mode by Hugo Haas and Dave Pawson,
 then adapted by Eric Prud'hommeaux and Vladimir Alexiev.
 
-Put shexc-mode.el somewhere emacs can find it (e.g. ~/.emacs.d/vendor/)
-And add the following to your .emacs file:
-``` lisp
+Put shexc-mode.el somewhere emacs can find it (e.g. ~/.emacs.d/vendor/),
+and add the following to your .emacs file:
+```lisp
 ;;
 ;; shexc mode
 ;;
