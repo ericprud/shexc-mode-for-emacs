@@ -1,7 +1,11 @@
 ;;; shexc-ts-mode.el --- Tree-sitter major mode for ShExC -*- lexical-binding: t; -*-
 
 ;; Author: Eric Prud'hommeaux <eric@w3.org>
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: languages
+;; URL: https://github.com/ericprud/shexc-mode-for-emacs
+;; SPDX-License-Identifier: MIT
 
 ;; This mode is a tree-sitter based companion to `shexc-mode' (see
 ;; shexc-mode.el), built on the grammar at
