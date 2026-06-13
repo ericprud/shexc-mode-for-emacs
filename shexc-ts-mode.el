@@ -1,6 +1,7 @@
 ;;; shexc-ts-mode.el --- Tree-sitter major mode for ShExC -*- lexical-binding: t; -*-
 
 ;; Author: Eric Prud'hommeaux <eric@w3.org>
+;; Assisted-by: Claude:claude-sonnet-4-6
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: languages
@@ -19,7 +20,7 @@
 ;; - line/block commenting (M-; via `comment-dwim')
 ;; - imenu index of shape declarations
 ;; - "jump to shape definition" / "find references to shape" via `xref'
-;;   (M-. / M-, / M-?), resolving `@<#Shape>', `EXTENDS @<#Shape>',
+;;   (`M-.'/`M-,'/`M-?'), resolving `@<#Shape>', `EXTENDS @<#Shape>',
 ;;   `&<#Shape>' and `start = @<#Shape>' references to their
 ;;   `shape_expr_decl'.
 ;;
@@ -116,8 +117,10 @@
 ;; `comment' node; an in-IRI `#' is just part of an `irireference'),
 ;; so use a `syntax-propertize-function' to neutralize the latter.
 (defun shexc-ts-mode--syntax-propertize (beg end)
-  "Give `#' characters that are not `#'-comment starters (e.g.
-the fragment separator in `<#Shape>' IRI references) a neutral
+  "Neutralize non-comment `#' characters between BEG and END.
+
+Give `#' characters that are not `#'-comment starters (e.g. the
+fragment separator in `<#Shape>' IRI references) a neutral
 `syntax-table' property, so that `forward-list'/`up-list' and
 other syntax-based scanning don't mistake them for the start of
 a line comment that swallows the rest of that line -- including
@@ -165,7 +168,7 @@ inserted comments (via `comment-dwim'/`comment-region'/`M-;').
 
 Note that `uncomment-region' looks for the *current* style's
 delimiters first: in line-comment style it will not recognize
-(and so cannot strip) a pre-existing `/* ... */' comment, while
+\(and so cannot strip) a pre-existing `/* ... */' comment, while
 in block-comment style it can still strip a pre-existing `#'
 comment (because `comment-start-skip' always matches both
 styles, and a bare `#' has nothing further to match once its
@@ -413,19 +416,23 @@ references (`@<#S>', `EXTENDS @<#S>', `&<#S>', `start = @<#S>')."
   'shexc-ts-mode)
 
 (cl-defmethod xref-backend-identifier-at-point ((_backend (eql shexc-ts-mode)))
+  "Return the shape label at point, for xref."
   (shexc-ts-mode--label-at-point))
 
 (cl-defmethod xref-backend-identifier-completion-table ((_backend (eql shexc-ts-mode)))
+  "Return all shape labels in the buffer, for xref completion."
   (delete-dups (mapcar (lambda (n) (treesit-node-text n t))
                        (shexc-ts-mode--all-labels))))
 
 (cl-defmethod xref-backend-definitions ((_backend (eql shexc-ts-mode)) identifier)
+  "Return the `shape_expr_decl' xref defining IDENTIFIER."
   (shexc-ts-mode--matching-xrefs
    (shexc-ts-mode--query-labels
     '((shape_expr_decl label: (shape_expr_label) @label)))
    identifier))
 
 (cl-defmethod xref-backend-references ((_backend (eql shexc-ts-mode)) identifier)
+  "Return the `shape_ref' xrefs referencing IDENTIFIER."
   (shexc-ts-mode--matching-xrefs
    (shexc-ts-mode--query-labels
     '((shape_ref label: (shape_expr_label) @label)))
@@ -570,7 +577,9 @@ Used as `add-log-current-defun-function', which powers
 
 (defface shexc-ts-mode-label-face
   '((t :inherit highlight))
-  "Face for a `shapeLabel' or a `reachable-shapeLabel' at
+  "Face for a required, non-extended reachable shapeLabel.
+
+A `shapeLabel' or `reachable-shapeLabel' at
 `shexc-ts-mode--strength-required' that is not `extended-' --
 reachable via an AND-conjunct or as a sole shape reference, with
 neither a `not-' nor `optional-' prefix, and without passing through
@@ -579,44 +588,55 @@ an EXTENDS edge.  Also the face of the focal shape's own `shapeLabel'."
 
 (defface shexc-ts-mode-optional-label-face
   '((t :inherit highlight :slant italic))
-  "Face for an `optional-reachable-shapeLabel' that is not `extended-'
--- reachable via one branch of an OR but not every branch, and without
+  "Face for an optional, non-extended reachable shapeLabel.
+
+An `optional-reachable-shapeLabel' that is not `extended-' --
+reachable via one branch of an OR but not every branch, and without
 passing through an EXTENDS edge (see
 `shexc-ts-mode--strength-optional')."
   :group 'shexc-ts)
 
 (defface shexc-ts-mode-negated-label-face
   '((t :inherit highlight :strike-through t))
-  "Face for a `not-reachable-shapeLabel' that is not `extended-' --
-reachable only inside a NOT, and without passing through an EXTENDS
-edge (see `shexc-ts-mode--strength-negated')."
+  "Face for a negated, non-extended reachable shapeLabel.
+
+A `not-reachable-shapeLabel' that is not `extended-' -- reachable only
+inside a NOT, and without passing through an EXTENDS edge (see
+`shexc-ts-mode--strength-negated')."
   :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-label-face
   '((t :inherit highlight :box t))
-  "Face for an `extended-reachable-shapeLabel' at
-`shexc-ts-mode--strength-required' -- as
-`shexc-ts-mode-label-face', but some reaching path passes
-through an EXTENDS edge."
+  "Face for a required, extended reachable shapeLabel.
+
+An `extended-reachable-shapeLabel' at
+`shexc-ts-mode--strength-required' -- as `shexc-ts-mode-label-face',
+but some reaching path passes through an EXTENDS edge."
   :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-optional-label-face
   '((t :inherit highlight :slant italic :box t))
-  "Face for an `extended-optional-reachable-shapeLabel' -- as
-`shexc-ts-mode-optional-label-face', but some reaching path
-passes through an EXTENDS edge."
+  "Face for an optional, extended reachable shapeLabel.
+
+An `extended-optional-reachable-shapeLabel' -- as
+`shexc-ts-mode-optional-label-face', but some reaching path passes
+through an EXTENDS edge."
   :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-negated-label-face
   '((t :inherit highlight :strike-through t :box t))
-  "Face for an `extended-not-reachable-shapeLabel' -- as
-`shexc-ts-mode-negated-label-face', but some reaching path
-passes through an EXTENDS edge."
+  "Face for a negated, extended reachable shapeLabel.
+
+An `extended-not-reachable-shapeLabel' -- as
+`shexc-ts-mode-negated-label-face', but some reaching path passes
+through an EXTENDS edge."
   :group 'shexc-ts)
 
 (defface shexc-ts-mode-predicate-face
   '((t :inherit font-lock-warning-face))
-  "Face for a `predicate' or `reachable-predicate' at
+  "Face for a required, non-extended reachable predicate.
+
+A `predicate' or `reachable-predicate' at
 `shexc-ts-mode--strength-required' that is not `extended-' --
 reachable via an AND-conjunct or as a sole shape reference, with
 neither a `not-' nor `optional-' prefix, and without passing through
@@ -626,79 +646,93 @@ this strength and never `extended-')."
 
 (defface shexc-ts-mode-optional-predicate-face
   '((t :inherit font-lock-warning-face :slant italic))
-  "Face for an `optional-reachable-predicate' that is not `extended-'
--- reachable via one branch of an OR but not every branch, and without
+  "Face for an optional, non-extended reachable predicate.
+
+An `optional-reachable-predicate' that is not `extended-' --
+reachable via one branch of an OR but not every branch, and without
 passing through an EXTENDS edge (see
 `shexc-ts-mode--strength-optional')."
   :group 'shexc-ts)
 
 (defface shexc-ts-mode-negated-predicate-face
   '((t :inherit font-lock-warning-face :strike-through t))
-  "Face for a `not-reachable-predicate' that is not `extended-' --
-reachable only inside a NOT, and without passing through an EXTENDS
-edge (see `shexc-ts-mode--strength-negated')."
+  "Face for a negated, non-extended reachable predicate.
+
+A `not-reachable-predicate' that is not `extended-' -- reachable only
+inside a NOT, and without passing through an EXTENDS edge (see
+`shexc-ts-mode--strength-negated')."
   :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-predicate-face
   '((t :inherit font-lock-warning-face :box t))
-  "Face for an `extended-reachable-predicate' at
+  "Face for a required, extended reachable predicate.
+
+An `extended-reachable-predicate' at
 `shexc-ts-mode--strength-required' -- as
-`shexc-ts-mode-predicate-face', but some reaching path passes
-through an EXTENDS edge."
+`shexc-ts-mode-predicate-face', but some reaching path passes through
+an EXTENDS edge."
   :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-optional-predicate-face
   '((t :inherit font-lock-warning-face :slant italic :box t))
-  "Face for an `extended-optional-reachable-predicate' -- as
-`shexc-ts-mode-optional-predicate-face', but some reaching
-path passes through an EXTENDS edge."
+  "Face for an optional, extended reachable predicate.
+
+An `extended-optional-reachable-predicate' -- as
+`shexc-ts-mode-optional-predicate-face', but some reaching path passes
+through an EXTENDS edge."
   :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-negated-predicate-face
   '((t :inherit font-lock-warning-face :strike-through t :box t))
-  "Face for an `extended-not-reachable-predicate' -- as
-`shexc-ts-mode-negated-predicate-face', but some reaching path
-passes through an EXTENDS edge."
+  "Face for a negated, extended reachable predicate.
+
+An `extended-not-reachable-predicate' -- as
+`shexc-ts-mode-negated-predicate-face', but some reaching path passes
+through an EXTENDS edge."
   :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-highlight-reachable-include-current t
-  "Whether `shexc-ts-mode-highlight-reachable-mode' highlights the
-focal shape's own `shapeLabel', using `shexc-ts-mode-label-face'.  See
+  "Whether to highlight the focal shape's own `shapeLabel'.
+When non-nil, `shexc-ts-mode-highlight-reachable-mode' highlights it
+using `shexc-ts-mode-label-face'.  See
 `shexc-ts-mode-highlight-reachable-shapes'."
   :type 'boolean
   :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-highlight-reachable-include-current-predicates t
-  "Whether `shexc-ts-mode-highlight-reachable-mode' highlights the
-focal shape's own `predicate's, using `shexc-ts-mode-predicate-face'.
-See `shexc-ts-mode-highlight-reachable-shapes'."
-  :type 'boolean
-  :group 'shexc-ts)
-
-(defcustom shexc-ts-mode-highlight-reachable-include-non-extended t
-  "Whether `shexc-ts-mode-highlight-reachable-mode' highlights
-`reachable-shapeLabel's that are not `extended-' -- those reached from
-the focal shape via AND, OR, NOT, or a sole reference, without any
-reaching path passing through an EXTENDS edge.  When nil, such shapes
-(and their predicates) are excluded entirely, as if those references
-were not followed; a shape also reachable via an EXTENDS path is still
-shown, via its `extended-' classification.  See
+  "Whether to highlight the focal shape's own `predicate's.
+When non-nil, `shexc-ts-mode-highlight-reachable-mode' highlights them
+using `shexc-ts-mode-predicate-face'.  See
 `shexc-ts-mode-highlight-reachable-shapes'."
   :type 'boolean
   :group 'shexc-ts)
 
+(defcustom shexc-ts-mode-highlight-reachable-include-non-extended t
+  "Whether to highlight non-`extended-' `reachable-shapeLabel's.
+Those are shapes reached from the focal shape via AND, OR, NOT, or a
+sole reference, without any reaching path passing through an EXTENDS
+edge.  When nil, such shapes (and their predicates) are excluded
+entirely, as if those references were not followed; a shape also
+reachable via an EXTENDS path is still shown, via its `extended-'
+classification.  See `shexc-ts-mode-highlight-reachable-shapes'."
+  :type 'boolean
+  :group 'shexc-ts)
+
 (defcustom shexc-ts-mode-highlight-reachable-include-non-extended-predicates t
-  "Whether `shexc-ts-mode-highlight-reachable-mode' also highlights
+  "Whether to also highlight non-`extended-' `reachable-predicate's.
+When non-nil, `shexc-ts-mode-highlight-reachable-mode' also highlights
 `predicate's and non-`extended-' `reachable-predicate's, not just
 `shapeLabel' and non-`extended-' `reachable-shapeLabel's.  Only
-relevant when `shexc-ts-mode-highlight-reachable-include-non-extended'
-is also non-nil.  See `shexc-ts-mode-highlight-reachable-shapes'."
+relevant when
+`shexc-ts-mode-highlight-reachable-include-non-extended' is also
+non-nil.  See `shexc-ts-mode-highlight-reachable-shapes'."
   :type 'boolean
   :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-highlight-reachable-include-extended t
-  "Whether `shexc-ts-mode-highlight-reachable-mode' also highlights
-`extended-reachable-shapeLabel's and `extended-reachable-predicate's --
+  "Whether to highlight shapes/predicates reachable only via EXTENDS.
+When non-nil, `shexc-ts-mode-highlight-reachable-mode' also highlights
+`extended-reachable-shapeLabel's and `extended-reachable-predicate's,
 those reachable from the focal shape only via an EXTENDS edge.  When
 nil, such shapes (and their predicates) are excluded entirely, as if
 EXTENDS edges were not followed; a shape reachable via both an EXTENDS
@@ -708,10 +742,10 @@ classification.  See `shexc-ts-mode-highlight-reachable-shapes'."
   :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-highlight-reachable-include-extended-predicates t
-  "Whether `shexc-ts-mode-highlight-reachable-mode' highlights the
-`extended-reachable-predicate's of `extended-reachable-shapeLabel's.
-Only relevant when `shexc-ts-mode-highlight-reachable-include-extended'
-is also non-nil.  See `shexc-ts-mode-highlight-reachable-shapes'."
+  "Whether to highlight `extended-reachable-predicate's.
+Of `extended-reachable-shapeLabel's.  Only relevant when
+`shexc-ts-mode-highlight-reachable-include-extended' is also non-nil.
+See `shexc-ts-mode-highlight-reachable-shapes'."
   :type 'boolean
   :group 'shexc-ts)
 
@@ -725,12 +759,11 @@ is also non-nil.  See `shexc-ts-mode-highlight-reachable-shapes'."
   (setq shexc-ts-mode--reachable-overlays nil))
 
 (defun shexc-ts-mode--decl-at (pos)
-  "Return the `shape_expr_decl' node containing POS, or nil if POS is
-not actually inside one.  `treesit-node-at' falls back to the nearest
-preceding node when POS is past the end of the buffer's last node --
-e.g. in trailing whitespace, or in a blank line between two
-declarations -- so the candidate decl's span must still be checked
-against POS."
+  "Return the `shape_expr_decl' node containing POS, or nil if none.
+`treesit-node-at' falls back to the nearest preceding node when POS is
+past the end of the buffer's last node -- e.g. in trailing whitespace,
+or in a blank line between two declarations -- so the candidate decl's
+span must still be checked against POS."
   (when-let* ((decl (treesit-parent-until
                       (treesit-node-at pos)
                       (lambda (n) (string= (treesit-node-type n) "shape_expr_decl"))
@@ -739,15 +772,18 @@ against POS."
          decl)))
 
 (defconst shexc-ts-mode--strength-optional 0
-  "Reference strength of an `optional-reachable-shapeLabel' (or
-`-predicate'): reachable only via one branch of an OR (and not via
-every branch), so the focal shape's conformance only *may* entail
-conformance to it.")
+  "Reference strength of an optional-reachable shapeLabel/predicate.
+
+An `optional-reachable-shapeLabel' (or `-predicate') is reachable only
+via one branch of an OR (and not via every branch), so the focal
+shape's conformance only *may* entail conformance to it.")
 
 (defconst shexc-ts-mode--strength-negated 1
-  "Reference strength of a `not-reachable-shapeLabel' (or
-`-predicate'): reachable only inside a NOT, so the focal shape's
-conformance entails *non*-conformance to it.")
+  "Reference strength of a not-reachable shapeLabel/predicate.
+
+A `not-reachable-shapeLabel' (or `-predicate') is reachable only inside
+a NOT, so the focal shape's conformance entails *non*-conformance to
+it.")
 
 (defconst shexc-ts-mode--strength-required 2
   "Reference strength of a `reachable-shapeLabel' (or `-predicate')
@@ -757,9 +793,8 @@ conformance always entails conformance to it.  Also the strength of
 the focal shape's own `predicate's.")
 
 (defun shexc-ts-mode--pick-label-face (strength extended)
-  "Return the face for a `shapeLabel' or `reachable-shapeLabel' of
-reference STRENGTH, with the `extended-' prefix iff EXTENDED is
-non-nil."
+  "Return the face for a `shapeLabel'/`reachable-shapeLabel', strength STRENGTH.
+With the `extended-' prefix iff EXTENDED is non-nil."
   (cond ((>= strength shexc-ts-mode--strength-required)
          (if extended 'shexc-ts-mode-extended-label-face
            'shexc-ts-mode-label-face))
@@ -771,10 +806,10 @@ non-nil."
            'shexc-ts-mode-optional-label-face))))
 
 (defun shexc-ts-mode--pick-predicate-face (strength extended)
-  "Return the face for a `predicate' or `reachable-predicate' (a
-`predicate' of the focal shape is always at
-`shexc-ts-mode--strength-required' and never EXTENDED) of reference
-STRENGTH, with the `extended-' prefix iff EXTENDED is non-nil."
+  "Return the face for a `predicate'/`reachable-predicate' of reference STRENGTH.
+With the `extended-' prefix iff EXTENDED is non-nil.  A `predicate' of
+the focal shape is always at `shexc-ts-mode--strength-required' and
+never EXTENDED."
   (cond ((>= strength shexc-ts-mode--strength-required)
          (if extended 'shexc-ts-mode-extended-predicate-face
            'shexc-ts-mode-predicate-face))
@@ -802,9 +837,9 @@ STRENGTH, with the `extended-' prefix iff EXTENDED is non-nil."
    t))
 
 (defun shexc-ts-mode--direct-extensions (def-node)
-  "Return the direct `extension' children of DEF-NODE, a
-`shape_definition' or `inline_shape_definition' node (unwrapping the
-former's single `inline_shape_definition' child first)."
+  "Return the direct `extension' children of DEF-NODE.
+DEF-NODE is a `shape_definition' or `inline_shape_definition' node.
+Unwraps the former's single `inline_shape_definition' child first."
   (when (string= (treesit-node-type def-node) "shape_definition")
     (setq def-node (treesit-node-child def-node 0)))
   (let (result)
@@ -815,10 +850,9 @@ former's single `inline_shape_definition' child first)."
     (nreverse result)))
 
 (defun shexc-ts-mode--strongest-per-label (refs)
-  "Collapse REFS, a list of (LABEL-TEXT . (STRENGTH . EXTENDED)), to one
-entry per LABEL-TEXT, keeping each label's strongest (maximum)
-STRENGTH; at equal STRENGTH, a non-EXTENDED entry preempts an EXTENDED
-one."
+  "Collapse REFS to one entry per LABEL-TEXT, keeping the strongest STRENGTH.
+REFS is a list of (LABEL-TEXT . (STRENGTH . EXTENDED)).  At equal
+STRENGTH, a non-EXTENDED entry preempts an EXTENDED one."
   (let (result)
     (dolist (ref refs)
       (let* ((label (car ref))
@@ -834,11 +868,11 @@ one."
     result))
 
 (defun shexc-ts-mode--merge-or-branches (left right strength)
-  "Merge the `shexc-ts-mode--collect-shape-refs' results LEFT and
-RIGHT of an OR's two branches (each computed at branch-root strength
-`shexc-ts-mode--strength-required') into the OR's contribution at its
-own incoming STRENGTH.  Each entry is (LABEL-TEXT . (STRENGTH .
-EXTENDED)).
+  "Merge OR-branch results LEFT and RIGHT into the OR's contribution at STRENGTH.
+LEFT and RIGHT are each a `shexc-ts-mode--collect-shape-refs' result
+computed at branch-root strength
+`shexc-ts-mode--strength-required'.  Each entry is (LABEL-TEXT .
+\(STRENGTH . EXTENDED)).
 
 A `reachable-shapeLabel' reachable through *both* branches keeps the
 weaker of its two per-branch strengths (no OR-downgrade, since every
@@ -872,11 +906,12 @@ reached via a NOT or via another OR-branch."
     (nreverse result)))
 
 (defun shexc-ts-mode--collect-shape-refs (node strength extended)
-  "Collect (LABEL-TEXT . (STRENGTH . EXTENDED)) entries, one per
-`reachable-shapeLabel' (`@<Label>' reference or EXTENDS target)
-directly or transitively reachable from NODE, a
+  "Collect (LABEL-TEXT . (STRENGTH . EXTENDED)) entries reachable from NODE.
+Each entry is for one `reachable-shapeLabel' (`@<Label>' reference or
+EXTENDS target) directly or transitively reachable from NODE, a
 `shape_or'/`shape_and'/`shape_not'/`shape_atom' or one of their
-`inline_*' counterparts.  STRENGTH determines whether the caller should
+`inline_*' counterparts.
+STRENGTH determines whether the caller should
 treat that `reachable-shapeLabel' as plain
 \(`shexc-ts-mode--strength-required'), `not-reachable-'
 \(`-strength-negated'), or `optional-reachable-' (`-strength-optional');
@@ -929,10 +964,10 @@ collected here (see `shexc-ts-mode--make-predicate-overlays')."
     (_ nil)))
 
 (defun shexc-ts-mode--make-predicate-overlays (decl strength extended)
-  "Overlay each predicate in DECL -- a `predicate' if DECL is the
-focal shape, or a `reachable-predicate' otherwise -- with the face for
-STRENGTH and EXTENDED, push the new overlays onto
-`shexc-ts-mode--reachable-overlays', and return them."
+  "Overlay each predicate in DECL with the face for STRENGTH and EXTENDED.
+Push the new overlays onto `shexc-ts-mode--reachable-overlays', and
+return them.  Each predicate is a `predicate' if DECL is the focal
+shape, or a `reachable-predicate' otherwise."
   (let (overlays)
     (dolist (pred-node (shexc-ts-mode--decl-predicate-nodes decl))
       (let ((ov (make-overlay (treesit-node-start pred-node)
@@ -943,13 +978,12 @@ STRENGTH and EXTENDED, push the new overlays onto
     overlays))
 
 (defun shexc-ts-mode-highlight-reachable-shapes (pos &optional include-predicates)
-  "Highlight the `shapeLabel' and `reachable-shapeLabel's of the
-`shape_expr_decl' at POS.
+  "Highlight `shapeLabel's reachable from the `shape_expr_decl' at POS.
 If `shexc-ts-mode-highlight-reachable-include-current' is non-nil,
 places an overlay on the focal shape's own ShapeDecl label using
 `shexc-ts-mode-label-face'.  Places an overlay on the ShapeDecl label of
 each shape transitively reachable from it via a sole shape reference
-(e.g. `<Contact1> @<Contact>'), AND, OR, NOT, or EXTENDS -- with
+\(e.g. `<Contact1> @<Contact>'), AND, OR, NOT, or EXTENDS -- with
 cycle/duplicate detection -- using the label face matching that
 `reachable-shapeLabel''s plain/`not-'/`optional-' classification,
 combined with whether any path reaching it passes through an EXTENDS
@@ -1061,16 +1095,17 @@ they were first discovered (breadth-first)."
     (nreverse result)))
 
 (defvar-local shexc-ts-mode--highlight-reachable-last-decl-start nil
-  "Start position of the `shape_expr_decl' last highlighted by
-`shexc-ts-mode--highlight-reachable-update', or the symbol `none' if the
-last update found point outside any `shape_expr_decl' (and so cleared
-the overlays).  Used to avoid recomputing the highlight on every
-command when point hasn't left the current shape.")
+  "Start position of the last-highlighted `shape_expr_decl', or `none'.
+Set by `shexc-ts-mode--highlight-reachable-update'.  The symbol
+`none' means the last update found point outside any
+`shape_expr_decl' and cleared the overlays.  Used to avoid
+recomputing the highlight on every command when point hasn't left the
+current shape.")
 
 (defun shexc-ts-mode--highlight-reachable-update ()
-  "Update the `reachable-shapeLabel'/`reachable-predicate' overlays for
-the `shape_expr_decl' at point, if it has changed since the last
-update; clear the overlays when point is outside any
+  "Update the `reachable-shapeLabel'/`reachable-predicate' overlays for point.
+Only recomputes if the `shape_expr_decl' at point has changed since
+the last update.  Clears the overlays when point is outside any
 `shape_expr_decl'.  Intended for `post-command-hook' via
 `shexc-ts-mode-highlight-reachable-mode'."
   (let* ((decl (shexc-ts-mode--decl-at (point)))
@@ -1095,7 +1130,7 @@ are included is controlled independently by
 `-include-non-extended', `-include-extended', and their
 `-predicates' counterparts (see `shexc-ts-mode-menu'); toggling those
 options does not disable this mode, so turning this mode off and back
-on (e.g. with `C-c C-l') restores the same selection.
+on (e.g. with \\[shexc-ts-mode-highlight-reachable-mode]) restores the same selection.
 
 This is the standalone, manifest-free counterpart to the highlighting
 `shex-manifest-browser-mode' drives from `sht:shape'; the two can be
@@ -1110,8 +1145,8 @@ used independently or together."
     (shexc-ts-mode-clear-reachable-overlays)))
 
 (defun shexc-ts-mode--refresh-highlight-reachable ()
-  "Recompute the `shexc-ts-mode-highlight-reachable-mode' overlays at
-point, if that mode is currently enabled."
+  "Recompute the `shexc-ts-mode-highlight-reachable-mode' overlays at point.
+Does nothing if that mode is not currently enabled."
   (when shexc-ts-mode-highlight-reachable-mode
     (if (shexc-ts-mode--decl-at (point))
         (shexc-ts-mode-highlight-reachable-shapes (point) t)
@@ -1236,10 +1271,10 @@ overlays are refreshed immediately to reflect the new setting."
 ;; and back.
 
 (defun shexc-ts-mode--plain-inline-shape-definition (value-expr)
-  "If VALUE-EXPR (an `inline_shape_expression') is simply a
-`{ ... }' shape -- an `inline_shape_definition' with no
-NodeConstraint and no AND/OR/NOT combination -- return that
-`inline_shape_definition' node; otherwise return nil."
+  "Return VALUE-EXPR's `inline_shape_definition' if it is simply a `{ ... }' shape.
+VALUE-EXPR is an `inline_shape_expression'.  \"Simply a `{ ... }'
+shape\" means an `inline_shape_definition' with no NodeConstraint and
+no AND/OR/NOT combination; otherwise returns nil."
   (when (and value-expr
              (string= (treesit-node-type value-expr) "inline_shape_expression"))
     (let ((atom (treesit-node-child value-expr 0 t)))
@@ -1251,9 +1286,9 @@ NodeConstraint and no AND/OR/NOT combination -- return that
                shape-expr))))))
 
 (defun shexc-ts-mode--shape-wrapper-at (pos)
-  "Return (TRIPLE-CONSTRAINT . INLINE-SHAPE-DEFINITION) for the
-nearest `<predicate> { ... }' construct enclosing POS, or nil if
-there is none.  Tries both POS and POS-1 as starting points: a
+  "Return (TRIPLE-CONSTRAINT . INLINE-SHAPE-DEFINITION) for POS, or nil.
+For the nearest `<predicate> { ... }' construct enclosing POS, or nil
+if there is none.  Tries both POS and POS-1 as starting points: a
 wrapper's closing brace coincides with the end of several
 ancestor nodes at once, so which node `treesit-node-at' returns
 right after `}' depends on which side of that shared boundary it
@@ -1273,11 +1308,12 @@ resolves to."
     nil))
 
 (defun shexc-ts-mode-unwrap-shape ()
-  "Remove the `<predicate> { ... }' wrapper enclosing point,
-keeping its triple expressions and re-indenting them in place
-\(the structural-editing \"splice\"/\"unwrap\"/\"raise\"
-operation, e.g. `paredit-splice-sexp', specialized to ShExC's
-nested-shape construct).  For example, with point inside
+  "Remove the `<predicate> { ... }' wrapper enclosing point.
+Keeps its triple expressions, re-indenting them in place \(the
+structural-editing \"splice\"/\"unwrap\"/\"raise\" operation, e.g.
+`paredit-splice-sexp', specialized to ShExC's nested-shape
+construct).
+For example, with point inside
 
     <#foo> {
       <p1> {
@@ -1314,11 +1350,12 @@ predicate."
       (indent-region beg (point)))))
 
 (defun shexc-ts-mode-wrap-in-shape ()
-  "Wrap the triple expression(s) at point, or in the active
-region, in a new `PREDICATE { ... }' shape that you are prompted
-for, re-indenting the result (the inverse \"wrap\" operation,
-e.g. `paredit-wrap-round'/`embrace-add', specialized to inject a
-ShExC predicate along with the braces).  For example, selecting
+  "Wrap the triple expression(s) at point, or in the active region.
+In a new `PREDICATE { ... }' shape that you are prompted for,
+re-indenting the result \(the inverse \"wrap\" operation, e.g.
+`paredit-wrap-round'/`embrace-add', specialized to inject a ShExC
+predicate along with the braces).
+For example, selecting
 
     <#foo> {
       <p11> @<#bar> ;
@@ -1382,8 +1419,7 @@ first one."
            return (treesit-node-start child)))
 
 (defun shexc-ts-mode--first-brace-in (node)
-  "Return the position of the first `{' token in NODE's subtree, or
-nil if it has none.
+  "Return the position of the first `{' token in NODE's subtree, or nil.
 
 A plain depth-first walk over all children (including anonymous
 ones, like `{' itself) -- `treesit-search-subtree' does not visit
@@ -1398,9 +1434,9 @@ anonymous nodes via a function PREDICATE."
       nil)))
 
 (defun shexc-ts-mode--shape-body-brace-at (pos)
-  "Return the position of the `{' of the `{ ... }' shape body that
-`shexc-ts-mode-toggle-fold' should act on at POS, or nil if there is
-none.
+  "Return the position of the `{' of the shape body to fold at POS, or nil.
+This is the `{' of the `{ ... }' shape body that
+`shexc-ts-mode-toggle-fold' should act on.
 
 If POS is inside a `shape_definition'/`inline_shape_definition', that
 is the body in question.  Otherwise, if POS is elsewhere in an
@@ -1477,15 +1513,14 @@ including the declaration."
 ;;; duplicate predicates
 
 (defun shexc-ts-mode--prefix-name (text)
-  "Return the prefix portion of prefixed-name TEXT, i.e. everything
-before its `:' -- \"ex\" for both `ex:p1' and `ex:', and \"\" for
-`:p1'."
+  "Return the part of prefixed-name TEXT before its `:'.
+E.g. \"ex\" for both `ex:p1' and `ex:', and \"\" for `:p1'."
   (substring text 0 (string-search ":" text)))
 
 (defun shexc-ts-mode--flymake-undefined-prefixes ()
-  "Return `:error' diagnostics for `prefixed_name's (`ex:p1', `ex:',
-`x:Foo', a value-set IRI, a datatype, ...) whose prefix has no
-matching `PREFIX' declaration."
+  "Return `:error' diagnostics for `prefixed_name's with an undeclared prefix.
+I.e. a `prefixed_name' (`ex:p1', `ex:', `x:Foo', a value-set IRI, a
+datatype, ...) whose prefix has no matching `PREFIX' declaration."
   (let ((declared
          (mapcar (lambda (n) (shexc-ts-mode--prefix-name (treesit-node-text n t)))
                  (treesit-query-capture
@@ -1506,10 +1541,10 @@ matching `PREFIX' declaration."
             (treesit-buffer-root-node) '((prefixed_name) @n) nil nil t)))))
 
 (defun shexc-ts-mode--flymake-syntax-errors ()
-  "Return `:error' diagnostics for tree-sitter ERROR nodes, i.e. text
-the parser could not make sense of, e.g. the `p3' in `ex: p3 . ;'
-\(a valid `ex:' prefixed name with empty local part, followed by an
-unexpected token\)."
+  "Return `:error' diagnostics for tree-sitter ERROR nodes.
+I.e. text the parser could not make sense of, e.g. the `p3' in
+`ex: p3 . ;' \(a valid `ex:' prefixed name with empty local part,
+followed by an unexpected token\)."
   (let (seen diagnostics)
     (dolist (n (treesit-query-capture
                  (treesit-buffer-root-node) '((ERROR) @e) nil nil t))
@@ -1523,8 +1558,9 @@ unexpected token\)."
     diagnostics))
 
 (defun shexc-ts-mode--flymake-undefined-shapes ()
-  "Return `:error' diagnostics for shape references with no matching
-`shape_expr_decl', e.g. `@<#Typo>' or `EXTENDS @<#Typo>'."
+  "Return `:error' diagnostics for undefined shape references.
+I.e. shape references with no matching `shape_expr_decl', e.g.
+`@<#Typo>' or `EXTENDS @<#Typo>'."
   (let ((decl-labels
          (mapcar (lambda (n) (treesit-node-text n t))
                  (shexc-ts-mode--query-labels
@@ -1543,9 +1579,9 @@ unexpected token\)."
             '((shape_ref label: (shape_expr_label) @label)))))))
 
 (defun shexc-ts-mode--flymake-duplicate-predicates ()
-  "Return `:note' diagnostics for predicates that occur more than once
-as direct elements of the same EachOf/OneOf-disjunct group
-\(`group_triple_expr'\).
+  "Return `:note' diagnostics for predicates repeated in a disjunct group.
+I.e. predicates that occur more than once as direct elements of the
+same EachOf/OneOf-disjunct group \(`group_triple_expr'\).
 
 Repeated predicates are not an error -- ShEx allows them, e.g. with
 different cardinalities or value constraints -- but they are often a
@@ -1587,7 +1623,9 @@ prefixed names with no matching `PREFIX' declaration (see
 could not make sense of (see `shexc-ts-mode--flymake-syntax-errors');
 and `:note' diagnostics for predicates repeated within the same
 EachOf/OneOf-disjunct group (see
-`shexc-ts-mode--flymake-duplicate-predicates')."
+`shexc-ts-mode--flymake-duplicate-predicates').
+
+REPORT-FN is Flymake's callback; see `flymake-diagnostic-functions'."
   (funcall report-fn
            (append (shexc-ts-mode--flymake-undefined-shapes)
                    (shexc-ts-mode--flymake-undefined-prefixes)
@@ -1597,8 +1635,8 @@ EachOf/OneOf-disjunct group (see
 ;;; shex-manifest-browser integration
 
 (defun shexc-ts-mode--manifest-browser-loaded-p ()
-  "Return non-nil if the optional `shex-manifest-browser' package has
-been loaded, i.e. `shexc-ts-mode-menu' should offer its settings."
+  "Return non-nil if the optional `shex-manifest-browser' package is loaded.
+I.e. if `shexc-ts-mode-menu' should offer its settings."
   (boundp 'shex-manifest-browser-highlight-extended-predicates))
 
 ;;;###autoload
@@ -1607,11 +1645,11 @@ been loaded, i.e. `shexc-ts-mode-menu' should offer its settings."
 
 That option controls whether `shex-manifest-browser' also highlights
 the predicates of extended shapes (not just their ShapeDecl labels)
-when it highlights a manifest entry's schema. The new value takes
+when it highlights a manifest entry's schema.  The new value takes
 effect the next time `shex-manifest-browser' highlights an entry."
   (interactive)
   (unless (shexc-ts-mode--manifest-browser-loaded-p)
-    (user-error "shex-manifest-browser is not loaded"))
+    (user-error "Package `shex-manifest-browser' is not loaded"))
   (setq shex-manifest-browser-highlight-extended-predicates
         (not shex-manifest-browser-highlight-extended-predicates))
   (message "shex-manifest-browser-highlight-extended-predicates: %s"
@@ -1620,8 +1658,8 @@ effect the next time `shex-manifest-browser' highlights an entry."
 ;;; Feature menu (transient)
 
 (defun shexc-ts-mode--menu-desc (label command)
-  "Return LABEL annotated with COMMAND's key binding in
-`shexc-ts-mode-map', for use as a `transient' suffix description."
+  "Return LABEL annotated with COMMAND's key binding in `shexc-ts-mode-map'.
+For use as a `transient' suffix description."
   (let ((key (where-is-internal command shexc-ts-mode-map t)))
     (if key
         (format "%-36s %s" label (key-description key))
