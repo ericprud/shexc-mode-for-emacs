@@ -98,8 +98,9 @@ to the original regexp-based `shexc-mode`, it adds:
 - `flymake` diagnostics (enabled automatically) for undefined shape
   references and (as an orientation aid) repeated predicates within one
   group
-- live highlighting of the shapes "germane" to the shape at point —
-  required/negated/optional via EXTENDS/AND/OR/NOT (`C-c C-h`)
+- live highlighting of the shapes reachable from the shape at point — via a
+  sole reference, AND, OR, NOT, or EXTENDS (`C-c C-h`; see [Extended-shape
+  highlighting](#extended-shape-highlighting) for the terminology)
 - a `transient` feature menu summarizing all of the above with live
   keybindings (`C-c C-c`)
 
@@ -118,7 +119,7 @@ description.
 | `C-c C-w`           | `shexc-ts-mode-wrap-in-shape`             | Wrap the region in a new `<predicate> { ... }` |
 | `C-c C-r`           | `shexc-ts-mode-rename-shape`              | Rename a shape label everywhere it's used |
 | `C-c C-f`           | `shexc-ts-mode-toggle-fold`               | Fold/unfold the `{ ... }` body at point |
-| `C-c C-h`           | `shexc-ts-mode-highlight-extends-mode`    | Live-highlight shapes germane to point |
+| `C-c C-h`           | `shexc-ts-mode-highlight-reachable-mode`    | Live-highlight shapes germane to point |
 | `C-c C-c`           | `shexc-ts-mode-menu`                      | Open the `transient` feature menu |
 | `C-M-a` / `C-M-e`   | `beginning/end-of-defun`                  | Previous/next shape declaration |
 | `C-M-f` / `C-M-b`   | `forward/backward-sexp`                   | Move across a shape/triple-expression branch |
@@ -365,32 +366,100 @@ EXTENDS clause → shape declaration, etc. (With `expreg`, `C-+` /
 
 ### Extended-shape highlighting
 
-#### `shexc-ts-mode-highlight-extends-mode` (`C-c C-h`)
+#### `shexc-ts-mode-highlight-reachable-mode` (`C-c C-h`)
 
-Toggle live highlighting of every shape "germane" to the `shape_expr_decl`
-containing point: itself, plus every shape transitively reachable via
-EXTENDS, a sole shape reference (`<#A> @<#B>`), AND, OR, and NOT. The
-highlighting updates automatically as point moves between shapes, and clears
-when point leaves all shape declarations. This works standalone — no
+Toggle live highlighting of every shape reachable from the `shape_expr_decl`
+containing point. Terminology used here (and in the source):
+
+- **`shapeLabel` / `predicate`** — the ShapeDecl label, and the predicates of
+  its shapeExpression, of the *focal* shape (the one containing point).
+  Highlighted at `shexc-ts-mode--strength-required` and never `extended-`,
+  i.e. with `shexc-ts-mode-label-face` / `shexc-ts-mode-predicate-face`, when
+  `shexc-ts-mode-highlight-reachable-include-current` /
+  `-include-current-predicates` are non-nil (the default; see below).
+- **`reachable-shapeLabel` / `reachable-predicate`** — the label, and
+  predicates, of any *other* shape transitively reachable from the focal
+  shape's shapeExpression via a sole shape reference (`<#A> @<#B>`), AND, OR,
+  NOT, or EXTENDS. E.g. in `<#S> { <#p1> . } AND @<#S2>` /
+  `<#S2> { <#p2> . }`, `<#S2>` is a `reachable-shapeLabel` and `<#p2>` a
+  `reachable-predicate`.
+- **`not-`/`optional-` prefix** — a `reachable-*` reached only inside a NOT
+  (`not-reachable-*`), or via only some branch(es) of an OR
+  (`optional-reachable-*`). Reachable via AND, EXTENDS, or as a sole
+  reference gets neither prefix.
+- **`extended-` prefix** — combined with any `reachable-*` term above when
+  the path from the focal shape passes through an EXTENDS edge anywhere
+  along the way. E.g. if `<#Person> EXTENDS @<#Tools>` and
+  `<#Tools> { ex:tool @<#TBoss> }`, then with point in `<#Person>`, both
+  `<#Tools>` and `<#TBoss>` are `extended-reachable-shapeLabel`s (the path to
+  `<#TBoss>` passes through the EXTENDS edge to `<#Tools>`), and `ex:tool` is
+  an `extended-reachable-predicate`.
+
+The highlighting updates automatically as point moves between shapes, and
+clears when point leaves all shape declarations. This works standalone — no
 manifest file needed (see `shex-manifest-browser` integration below for the
 manifest-driven variant).
 
-Each reachable shape is classified by the *strength* of its strongest
-reaching path, shown with a different label/predicate face:
+Each `reachable-*` is classified along two independent axes, which combine to
+select one of 12 faces:
 
-| Strength   | Meaning | Label face | Predicate face |
-| ---------- | ------- | ---------- | --------------- |
-| required   | Itself, anything it EXTENDS, or an AND-conjunct/sole reference — every node conforming to the focal shape also conforms to this one | `shexc-ts-mode-extends-label-face` (`highlight` + bold) | `shexc-ts-mode-extends-predicate-face` (`font-lock-warning-face`) |
-| negated    | Reachable only inside a NOT — conformance requires *not* conforming to this shape | `shexc-ts-mode-extends-label-face-negated` (`error` + bold) | `shexc-ts-mode-extends-predicate-face-negated` (`error`) |
-| optional   | Reachable via only some branches of an OR | `shexc-ts-mode-extends-label-face-optional` (`shadow` + bold) | `shexc-ts-mode-extends-predicate-face-optional` (`shadow`) |
+- **Strength** of its strongest reaching path — shown via a text decoration:
 
-"Required" preempts "negated"/"optional" if a shape is reachable via more
-than one path. Set `shexc-ts-mode-highlight-extends-include-predicates` to
-`nil` if you only want the ShapeDecl labels highlighted, not their
-predicates, or toggle it on the fly with
-`shexc-ts-mode-toggle-highlight-extends-predicates` (also in the feature menu,
-`C-c C-c P`) — if `shexc-ts-mode-highlight-extends-mode` is on, the overlays
-in the current buffer refresh immediately to match.
+  | Strength | `reachable-*` prefix | Meaning | Decoration |
+  | -------- | --------------------- | ------- | ---------- |
+  | required | (none)      | Via EXTENDS, an AND-conjunct, or a sole reference — every node conforming to the focal shape also conforms to this one | (none) |
+  | negated  | `not-`      | Reachable only inside a NOT — conformance requires *not* conforming to this shape | `:strike-through` |
+  | optional | `optional-` | Reachable via only some branches of an OR | `:slant italic` |
+
+- **`extended-`-ness** — whether *every* reaching path of that strength
+  passes through an EXTENDS edge, shown via `:box`. (If a shape is reachable
+  via both an `extended-` and a non-`extended-` path of the same strength,
+  the non-`extended-` classification wins, so no box is shown.)
+
+Both axes are layered on top of a role color: `shexc-ts-mode-label-face`
+(based on `highlight`) for `shapeLabel`/`reachable-shapeLabel`s, and
+`shexc-ts-mode-predicate-face` (based on `font-lock-warning-face`) for
+`predicate`/`reachable-predicate`s. The 12 faces follow the naming pattern
+`shexc-ts-mode-[extended-][optional-|negated-]{label,predicate}-face`,
+e.g. `shexc-ts-mode-extended-optional-label-face` for an
+`extended-optional-reachable-shapeLabel`.
+
+"required" preempts "negated"/"optional" if a shape is reachable via more
+than one path.
+
+#### Toggling which shapes/predicates get highlighted
+
+Three groups — the focal shape itself, non-`extended-` `reachable-*`s, and
+`extended-reachable-*`s — are each independently toggleable, separately for
+`shapeLabel`s and `predicate`s, via six `shexc-ts-mode-highlight-reachable-include-*`
+options (all non-nil by default). Each has a `shexc-ts-mode-toggle-*` command
+that flips it and, if `shexc-ts-mode-highlight-reachable-mode` is on, refreshes
+the overlays in the current buffer immediately; all six are also bound in the
+feature menu (`C-c C-c`):
+
+| Menu key | `...-include-*` option | Effect when set to `nil` |
+| -------- | ----------------------- | ------------------------- |
+| `h` | `current` | the focal shape's own `shapeLabel` is not highlighted |
+| `H` | `current-predicates` | the focal shape's own `predicate`s are not highlighted |
+| `e` | `non-extended` | non-`extended-` `reachable-shapeLabel`s (and their predicates) are excluded entirely |
+| `E` | `non-extended-predicates` | non-`extended-` `reachable-shapeLabel`s are still shown, but their `reachable-predicate`s are not |
+| `x` | `extended` | `extended-reachable-shapeLabel`s (and their predicates) are excluded entirely |
+| `X` | `extended-predicates` | `extended-reachable-shapeLabel`s are still shown, but their `reachable-predicate`s are not |
+
+(each option and command is prefixed `shexc-ts-mode-highlight-reachable-` /
+`shexc-ts-mode-toggle-highlight-reachable-`, e.g. `e` is
+`shexc-ts-mode-highlight-reachable-include-non-extended`, toggled by
+`shexc-ts-mode-toggle-highlight-reachable-non-extended`.)
+
+When `e` or `x` excludes a shape that's reachable via *both* a non-EXTENDS
+and an EXTENDS path, it's still shown via the other classification — only a
+shape with *no* remaining reaching path is excluded entirely (and dropped
+from `shexc-ts-mode-highlight-reachable-shapes`'s return value).
+
+These six selections persist independently of
+`shexc-ts-mode-highlight-reachable-mode` itself: `C-c C-h` toggles the mode
+on and off without changing them, so turning highlighting off and back on
+restores the same selection of shapes/predicates.
 
 #### Programmatic API
 
@@ -398,28 +467,33 @@ The underlying function, used by both the standalone minor mode above and by
 `shex-manifest-browser` (below), is:
 
 ```
-shexc-ts-mode-highlight-extended-shapes pos &optional include-predicates
+shexc-ts-mode-highlight-reachable-shapes pos &optional include-predicates
 ```
 
-Given a buffer position POS inside a `shape_expr_decl`, this highlights every
-germane shape as described above and returns the list of their label-text
-strings, in discovery order, after clearing any overlays from a previous
-call. To remove the overlays programmatically (or interactively), call:
+Given a buffer position POS, this highlights the enclosing `shape_expr_decl`'s
+own `shapeLabel` (and, if INCLUDE-PREDICATES is non-nil, its `predicate`s),
+plus every `reachable-shapeLabel` (and, if INCLUDE-PREDICATES is non-nil,
+every `reachable-predicate`) as described above, and returns the list of
+`reachable-shapeLabel` text (not including the focal shape's own label), in
+discovery order, after clearing any overlays from a previous call. If POS is
+not inside any `shape_expr_decl`, it just clears the overlays and returns
+nil. To remove the overlays programmatically (or interactively), call:
 
 ```
-shexc-ts-mode-clear-extends-overlays
+shexc-ts-mode-clear-reachable-overlays
 ```
 
 #### `shex-manifest-browser` integration
 
 When `shex-manifest-browser.el` is loaded alongside `shexc-ts-mode`, the
-manifest browser automatically calls `shexc-ts-mode-highlight-extended-shapes`
+manifest browser automatically calls `shexc-ts-mode-highlight-reachable-shapes`
 whenever it navigates to a test entry whose `sht:schema` opens in a buffer
 that is in `shexc-ts-mode`.  The highlighted shape is the entry's `sht:shape`
 IRI — the overlays update as you move between entries, mirroring the existing
 `sht:shape`/`sht:focus` point-highlighting.
 
-To also highlight the predicates of extended shapes, set:
+To also highlight `predicate`s and `reachable-predicate`s, not just
+`reachable-shapeLabel`s, set:
 
 ```lisp
 (setq shex-manifest-browser-highlight-extended-predicates t)
