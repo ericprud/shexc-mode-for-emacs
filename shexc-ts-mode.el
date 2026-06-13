@@ -7,6 +7,8 @@
 ;; URL: https://github.com/ericprud/shexc-mode-for-emacs
 ;; SPDX-License-Identifier: MIT
 
+;;; Commentary:
+
 ;; This mode is a tree-sitter based companion to `shexc-mode' (see
 ;; shexc-mode.el), built on the grammar at
 ;; https://github.com/ericprud/tree-sitter-shexc
@@ -62,7 +64,7 @@
 ;; `shexc-ts-mode--manifest-browser-loaded-p').
 (defvar shex-manifest-browser-highlight-extended-predicates)
 
-(defgroup shexc nil
+(defgroup shexc-ts nil
   "Major mode for editing ShExC documents with tree-sitter."
   :group 'languages)
 
@@ -70,7 +72,7 @@
   "Number of columns for each indentation step in `shexc-ts-mode'."
   :type 'integer
   :safe 'integerp
-  :group 'shexc)
+  :group 'shexc-ts)
 
 ;;; Syntax table
 
@@ -288,8 +290,7 @@ need to remove a comment written in the other style."
 
    :language 'shexc
    :feature 'operator
-   '((["." "|" "&" "@" "^" "~" "-" "="]
-      ) @font-lock-operator-face
+   '((["." "|" "&" "@" "^" "~" "-" "="]) @font-lock-operator-face
      ([(card_star) (card_plus) (card_opt) (kw_inverse)]) @font-lock-operator-face)
 
    :language 'shexc
@@ -407,7 +408,6 @@ references (`@<#S>', `EXTENDS @<#S>', `&<#S>', `start = @<#S>')."
    (shexc-ts-mode--query-labels
     '((shape_ref label: (shape_expr_label) @label)))))
 
-;;;###autoload
 (defun shexc-ts-mode--xref-backend ()
   "Return the xref backend symbol for `shexc-ts-mode'."
   'shexc-ts-mode)
@@ -575,7 +575,7 @@ Used as `add-log-current-defun-function', which powers
 reachable via an AND-conjunct or as a sole shape reference, with
 neither a `not-' nor `optional-' prefix, and without passing through
 an EXTENDS edge.  Also the face of the focal shape's own `shapeLabel'."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-optional-label-face
   '((t :inherit highlight :slant italic))
@@ -583,14 +583,14 @@ an EXTENDS edge.  Also the face of the focal shape's own `shapeLabel'."
 -- reachable via one branch of an OR but not every branch, and without
 passing through an EXTENDS edge (see
 `shexc-ts-mode--strength-optional')."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-negated-label-face
   '((t :inherit highlight :strike-through t))
   "Face for a `not-reachable-shapeLabel' that is not `extended-' --
 reachable only inside a NOT, and without passing through an EXTENDS
 edge (see `shexc-ts-mode--strength-negated')."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-label-face
   '((t :inherit highlight :box t))
@@ -598,21 +598,21 @@ edge (see `shexc-ts-mode--strength-negated')."
 `shexc-ts-mode--strength-required' -- as
 `shexc-ts-mode-label-face', but some reaching path passes
 through an EXTENDS edge."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-optional-label-face
   '((t :inherit highlight :slant italic :box t))
   "Face for an `extended-optional-reachable-shapeLabel' -- as
 `shexc-ts-mode-optional-label-face', but some reaching path
 passes through an EXTENDS edge."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-negated-label-face
   '((t :inherit highlight :strike-through t :box t))
   "Face for an `extended-not-reachable-shapeLabel' -- as
 `shexc-ts-mode-negated-label-face', but some reaching path
 passes through an EXTENDS edge."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-predicate-face
   '((t :inherit font-lock-warning-face))
@@ -622,7 +622,7 @@ reachable via an AND-conjunct or as a sole shape reference, with
 neither a `not-' nor `optional-' prefix, and without passing through
 an EXTENDS edge (a `predicate' of the focal shape itself is always at
 this strength and never `extended-')."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-optional-predicate-face
   '((t :inherit font-lock-warning-face :slant italic))
@@ -630,14 +630,14 @@ this strength and never `extended-')."
 -- reachable via one branch of an OR but not every branch, and without
 passing through an EXTENDS edge (see
 `shexc-ts-mode--strength-optional')."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-negated-predicate-face
   '((t :inherit font-lock-warning-face :strike-through t))
   "Face for a `not-reachable-predicate' that is not `extended-' --
 reachable only inside a NOT, and without passing through an EXTENDS
 edge (see `shexc-ts-mode--strength-negated')."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-predicate-face
   '((t :inherit font-lock-warning-face :box t))
@@ -645,35 +645,35 @@ edge (see `shexc-ts-mode--strength-negated')."
 `shexc-ts-mode--strength-required' -- as
 `shexc-ts-mode-predicate-face', but some reaching path passes
 through an EXTENDS edge."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-optional-predicate-face
   '((t :inherit font-lock-warning-face :slant italic :box t))
   "Face for an `extended-optional-reachable-predicate' -- as
 `shexc-ts-mode-optional-predicate-face', but some reaching
 path passes through an EXTENDS edge."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defface shexc-ts-mode-extended-negated-predicate-face
   '((t :inherit font-lock-warning-face :strike-through t :box t))
   "Face for an `extended-not-reachable-predicate' -- as
 `shexc-ts-mode-negated-predicate-face', but some reaching path
 passes through an EXTENDS edge."
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-highlight-reachable-include-current t
   "Whether `shexc-ts-mode-highlight-reachable-mode' highlights the
 focal shape's own `shapeLabel', using `shexc-ts-mode-label-face'.  See
 `shexc-ts-mode-highlight-reachable-shapes'."
   :type 'boolean
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-highlight-reachable-include-current-predicates t
   "Whether `shexc-ts-mode-highlight-reachable-mode' highlights the
 focal shape's own `predicate's, using `shexc-ts-mode-predicate-face'.
 See `shexc-ts-mode-highlight-reachable-shapes'."
   :type 'boolean
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-highlight-reachable-include-non-extended t
   "Whether `shexc-ts-mode-highlight-reachable-mode' highlights
@@ -685,7 +685,7 @@ were not followed; a shape also reachable via an EXTENDS path is still
 shown, via its `extended-' classification.  See
 `shexc-ts-mode-highlight-reachable-shapes'."
   :type 'boolean
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-highlight-reachable-include-non-extended-predicates t
   "Whether `shexc-ts-mode-highlight-reachable-mode' also highlights
@@ -694,7 +694,7 @@ shown, via its `extended-' classification.  See
 relevant when `shexc-ts-mode-highlight-reachable-include-non-extended'
 is also non-nil.  See `shexc-ts-mode-highlight-reachable-shapes'."
   :type 'boolean
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-highlight-reachable-include-extended t
   "Whether `shexc-ts-mode-highlight-reachable-mode' also highlights
@@ -705,7 +705,7 @@ EXTENDS edges were not followed; a shape reachable via both an EXTENDS
 and a non-EXTENDS path is still shown, via its non-EXTENDS
 classification.  See `shexc-ts-mode-highlight-reachable-shapes'."
   :type 'boolean
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-highlight-reachable-include-extended-predicates t
   "Whether `shexc-ts-mode-highlight-reachable-mode' highlights the
@@ -713,7 +713,7 @@ classification.  See `shexc-ts-mode-highlight-reachable-shapes'."
 Only relevant when `shexc-ts-mode-highlight-reachable-include-extended'
 is also non-nil.  See `shexc-ts-mode-highlight-reachable-shapes'."
   :type 'boolean
-  :group 'shexc)
+  :group 'shexc-ts)
 
 (defvar-local shexc-ts-mode--reachable-overlays nil
   "Overlays placed by `shexc-ts-mode-highlight-reachable-shapes'.")
@@ -1095,7 +1095,7 @@ are included is controlled independently by
 `-include-non-extended', `-include-extended', and their
 `-predicates' counterparts (see `shexc-ts-mode-menu'); toggling those
 options does not disable this mode, so turning this mode off and back
-on (e.g. with `C-c C-h') restores the same selection.
+on (e.g. with `C-c C-l') restores the same selection.
 
 This is the standalone, manifest-free counterpart to the highlighting
 `shex-manifest-browser-mode' drives from `sht:shape'; the two can be
@@ -1630,7 +1630,7 @@ effect the next time `shex-manifest-browser' highlights an entry."
 (transient-define-prefix shexc-ts-mode-menu ()
   "Feature menu for `shexc-ts-mode', showing live keybindings."
   [["Navigate"
-    (:info "C-c C-h          Toggle highlight-reachable-mode on/off")
+    (:info "C-c C-l          Toggle highlight-reachable-mode on/off")
     ("h" shexc-ts-mode-toggle-highlight-reachable-current
      :description
      (lambda ()
@@ -1740,7 +1740,7 @@ see the Setup section in shexc-ts-mode.el"))
   (define-key shexc-ts-mode-map (kbd "C-c C-r") #'shexc-ts-mode-rename-shape)
 
   ;; live "germane shapes" highlighting, following point
-  (define-key shexc-ts-mode-map (kbd "C-c C-h") #'shexc-ts-mode-highlight-reachable-mode)
+  (define-key shexc-ts-mode-map (kbd "C-c C-l") #'shexc-ts-mode-highlight-reachable-mode)
 
   ;; folding `{ ... }' shape bodies
   (define-key shexc-ts-mode-map (kbd "C-c C-f") #'shexc-ts-mode-toggle-fold)
