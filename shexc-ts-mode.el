@@ -1825,10 +1825,14 @@ see the Setup section in shexc-ts-mode.el"))
   (treesit-major-mode-setup))
 
 ;; Prefer the tree-sitter mode for .shex(c) files when its grammar is
-;; available; `shexc-mode' remains the fallback otherwise.
+;; available; `shexc-mode' remains the fallback otherwise.  `require'
+;; `treesit' first since this form runs from the autoloads file, before
+;; `treesit-ready-p' would otherwise be defined.
 ;;;###autoload
-(when (treesit-ready-p 'shexc t)
-  (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode)))
+(progn
+  (require 'treesit)
+  (when (treesit-ready-p 'shexc t)
+    (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode))))
 
 (provide 'shexc-ts-mode)
 
