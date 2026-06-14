@@ -72,9 +72,12 @@ Eg here is the index of shapes for [fhir.shex](http://hl7.org/fhir/fhir.shex) sh
 
 ## shexc-ts-mode (tree-sitter)
 
-![Demo: flymake catches schema:name with an undeclared prefix; the
-shexc-ts-mode-menu's "Insert PREFIX for prefix at point" command
-declares it from the RDFa prefix map](example/demo/demo.gif)
+![Demo: opening example/person-extends.shex, flymake catches schema:name
+with an undeclared prefix, and the shexc-ts-mode-menu's "Insert PREFIX for
+prefix at point" command declares it from the RDFa prefix map; then, on the
+<Person> shapeDecl, shexc-ts-mode-highlight-reachable-mode is enabled and
+each highlight-reachable toggle (current shape/predicates, non-extended
+reachable, extended reachable) is switched on in turn](example/demo/demo.gif)
 
 `shexc-ts-mode.el` is a newer, tree-sitter-based
 companion mode built on the grammar at
