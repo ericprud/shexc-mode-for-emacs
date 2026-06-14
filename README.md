@@ -1,74 +1,15 @@
 # shexc-mode-for-emacs
-This is an emacs major mode for editing ShExC documents
-originally created as N3-mode by Hugo Haas and Dave Pawson,
-then adapted by Eric Prud'hommeaux and Vladimir Alexiev.
 
-Put shexc-mode.el somewhere emacs can find it (e.g. ~/.emacs.d/vendor/),
-and add the following to your .emacs file:
-```lisp
-;;
-;; shexc mode
-;;
+Emacs major modes for editing [ShExC](https://shex.io/shex-semantics/#shexc)
+(ShEx Compact Syntax) documents:
 
-(add-to-list 'load-path "{folder that contains shexc-mode.el}")
-(autoload 'shexc-mode "shexc-mode" "Major mode for ShExC (ShEx Compact Syntax) files" t)
-
-;; Turn on font lock when in shexc mode
-(add-hook 'shexc-mode-hook
-          'turn-on-font-lock)
-
-(setq auto-mode-alist
-      (append
-       (list
-        '("\\.shexc" . shexc-mode)
-        '("\\.shex" . shexc-mode))
-       auto-mode-alist))
-
-;; Replace {path} with the full path to shexc-mode.el on your system.
-
-;; If you want to make it load just a little faster;
-;; C-x f shexc-mode.el
-;; M-x byte-compile-file shexc-mode.el
-```
-
-You can also use `imenu` to make an index of shapes 
-and [`imenu-list`](https://github.com/bmag/imenu-list) to see them in a panel on the right.
-
-```lisp
-(defun my-goto-function ()
-  "Find the definition of the function/term at point."
-  (interactive)
-  (let ((sym (thing-at-point 'symbol)))
-    (if sym (imenu sym)
-      (call-interactively 'imenu))))
-      
-(autoload 'imenu-list-minor-mode "imenu-list" nil t)
-(add-hook 'shexc-mode-hook 'imenu-add-menubar-index)
-(add-hook 'shexc-mode-hook 'imenu-list-minor-mode)
-
-(setq
-  imenu-list-auto-resize nil ; fhir.shex has long shape names, so auto-resize doesn't work well
-  imenu-list-size 0.3
-  ;; imenu-list-focus-after-activation t
-)
-
-;; https://github.com/bmag/imenu-list/issues/31
-(add-hook
- 'imenu-list-major-mode-hook
- (defun my-imenu-list-major-mode-hook ()
-   (setq-local truncate-lines t)
-   (setq-local scroll-conservatively 0)
-   (setq-local scroll-down-aggressively 1)
-   (setq-local scroll-up-aggressively 1)))
-
-;;; example key bindings
-(global-set-key (kbd "C-x C-i") 'my-goto-function)
-(global-set-key (kbd "C-x I") 'imenu-list-smart-toggle)
-
-```
-Eg here is the index of shapes for [fhir.shex](http://hl7.org/fhir/fhir.shex) shown in the right panel (buffer `*Ilist*`):
-
-![](shex-imenu-list-fhir.png)
+- **`shexc-ts-mode`** — a tree-sitter-based mode (Emacs 29+), documented
+  below: structure-aware indentation and navigation, an `imenu` index,
+  `xref`, `flymake` diagnostics, live highlighting, and more.
+- **`shexc-mode`** — the original regexp-based mode, predating Emacs's
+  tree-sitter support. See the `;;; Commentary:` and `;;; Setup:` sections
+  at the top of [`shexc-mode.el`](shexc-mode.el) for its history and setup
+  instructions.
 
 ## shexc-ts-mode (tree-sitter)
 
@@ -87,7 +28,8 @@ to the original regexp-based `shexc-mode`, it adds:
 - structure-aware indentation (`indent-region`, `indent-for-tab-command`/`TAB`)
 - line and block commenting that knows about ShExC's nesting (`M-;` via `comment-dwim`)
 - toggling between `#`-style and `/* */`-style comments (`C-c C-k`, see below)
-- an `imenu` index of shape declarations (no extra setup needed; works with `imenu-list` as above)
+- an `imenu` index of shape declarations (no extra setup needed; works with
+  `imenu-list`, see [imenu and imenu-list](#imenu-and-imenu-list) below)
 - "jump to shape definition" / "find references to shape" via `xref`
   (`M-.` / `M-,` / `M-?`), resolving `@<#Shape>`, `EXTENDS @<#Shape>`,
   `&<#Shape>` and `start = @<#Shape>` references to their declarations
@@ -621,3 +563,46 @@ browser" group with a toggle for
 directly, see [Extended-shape highlighting](#extended-shape-highlighting)
 above). The toggle takes effect the next time `shex-manifest-browser`
 highlights an entry.
+
+### `imenu` and `imenu-list`
+
+Shape declarations are indexed for `imenu` automatically (via
+`treesit-simple-imenu-settings`, set up as part of [Setup](#setup) above) —
+no extra configuration is needed for `M-x imenu` or `imenu-list` to find
+them.
+
+To show the index in a panel on the right via
+[`imenu-list`](https://github.com/bmag/imenu-list):
+
+```lisp
+(defun my-goto-function ()
+  "Find the definition of the function/term at point."
+  (interactive)
+  (let ((sym (thing-at-point 'symbol)))
+    (if sym (imenu sym)
+      (call-interactively 'imenu))))
+
+(autoload 'imenu-list-minor-mode "imenu-list" nil t)
+(add-hook 'shexc-ts-mode-hook 'imenu-list-minor-mode)
+
+(setq imenu-list-auto-resize nil ; fhir.shex has long shape names, so auto-resize doesn't work well
+      imenu-list-size 0.3)
+
+;; https://github.com/bmag/imenu-list/issues/31
+(add-hook
+ 'imenu-list-major-mode-hook
+ (defun my-imenu-list-major-mode-hook ()
+   (setq-local truncate-lines t)
+   (setq-local scroll-conservatively 0)
+   (setq-local scroll-down-aggressively 1)
+   (setq-local scroll-up-aggressively 1)))
+
+;;; example key bindings
+(global-set-key (kbd "C-x C-i") 'my-goto-function)
+(global-set-key (kbd "C-x I") 'imenu-list-smart-toggle)
+```
+
+Here is the index of shapes for [fhir.shex](http://hl7.org/fhir/fhir.shex)
+shown in the right panel (buffer `*Ilist*`):
+
+![](shex-imenu-list-fhir.png)
