@@ -75,6 +75,150 @@
   :safe 'integerp
   :group 'shexc-ts)
 
+;;; Prefix maps
+;;
+;; A "prefix map" associates short prefixes (as in `PREFIX ex: <...>')
+;; with the IRIs they conventionally abbreviate, along with metadata
+;; on where that association is authoritatively published.
+;; `shexc-ts-mode-insert-prefix' and the "Undefined prefix" flymake
+;; diagnostic (`shexc-ts-mode--flymake-undefined-prefixes') consult the
+;; active map (`shexc-ts-mode-prefix-map') to propose a `PREFIX'
+;; declaration for an undeclared prefix.
+
+(defconst shexc-ts-mode--prefix-map-rdfa
+  '(:source "https://www.w3.org/2011/rdfa-context/rdfa-1.1"
+    :description
+    "W3C RDFa Core 1.1 Initial Context: the default vocabulary prefixes \
+recognized by RDFa processors, combining the W3C's own vocabularies \
+with other widely-used ones (Dublin Core, FOAF, schema.org, etc.)."
+    :prefixes
+    (("as" . "https://www.w3.org/ns/activitystreams#")
+     ("cc" . "http://creativecommons.org/ns#")
+     ("csvw" . "http://www.w3.org/ns/csvw#")
+     ("ctag" . "http://commontag.org/ns#")
+     ("dc" . "http://purl.org/dc/terms/")
+     ("dc11" . "http://purl.org/dc/elements/1.1/")
+     ("dcat" . "http://www.w3.org/ns/dcat#")
+     ("dcterms" . "http://purl.org/dc/terms/")
+     ("dqv" . "http://www.w3.org/ns/dqv#")
+     ("duv" . "https://www.w3.org/ns/duv#")
+     ("foaf" . "http://xmlns.com/foaf/0.1/")
+     ("gr" . "http://purl.org/goodrelations/v1#")
+     ("grddl" . "http://www.w3.org/2003/g/data-view#")
+     ("ical" . "http://www.w3.org/2002/12/cal/icaltzd#")
+     ("jsonld" . "http://www.w3.org/ns/json-ld#")
+     ("ldp" . "http://www.w3.org/ns/ldp#")
+     ("ma" . "http://www.w3.org/ns/ma-ont#")
+     ("oa" . "http://www.w3.org/ns/oa#")
+     ("odrl" . "http://www.w3.org/ns/odrl/2/")
+     ("og" . "http://ogp.me/ns#")
+     ("org" . "http://www.w3.org/ns/org#")
+     ("owl" . "http://www.w3.org/2002/07/owl#")
+     ("prov" . "http://www.w3.org/ns/prov#")
+     ("qb" . "http://purl.org/linked-data/cube#")
+     ("rdf" . "http://www.w3.org/1999/02/22-rdf-syntax-ns#")
+     ("rdfa" . "http://www.w3.org/ns/rdfa#")
+     ("rdfs" . "http://www.w3.org/2000/01/rdf-schema#")
+     ("rev" . "http://purl.org/stuff/rev#")
+     ("rif" . "http://www.w3.org/2007/rif#")
+     ("rr" . "http://www.w3.org/ns/r2rml#")
+     ("schema" . "http://schema.org/")
+     ("sd" . "http://www.w3.org/ns/sparql-service-description#")
+     ("sioc" . "http://rdfs.org/sioc/ns#")
+     ("skos" . "http://www.w3.org/2004/02/skos/core#")
+     ("skosxl" . "http://www.w3.org/2008/05/skos-xl#")
+     ("sosa" . "http://www.w3.org/ns/sosa/")
+     ("ssn" . "http://www.w3.org/ns/ssn/")
+     ("time" . "http://www.w3.org/2006/time#")
+     ("v" . "http://rdf.data-vocabulary.org/#")
+     ("vcard" . "http://www.w3.org/2006/vcard/ns#")
+     ("void" . "http://rdfs.org/ns/void#")
+     ("wdr" . "http://www.w3.org/2007/05/powder#")
+     ("wdrs" . "http://www.w3.org/2007/05/powder-s#")
+     ("xhv" . "http://www.w3.org/1999/xhtml/vocab#")
+     ("xml" . "http://www.w3.org/XML/1998/namespace")
+     ("xsd" . "http://www.w3.org/2001/XMLSchema#")))
+  "Prefix map transcribed from the W3C RDFa Core 1.1 Initial Context.
+See its `:source' for the authoritative, machine-readable (JSON-LD)
+list this was transcribed from.")
+
+(defconst shexc-ts-mode--prefix-map-wikidata
+  '(:source
+    "https://www.mediawiki.org/wiki/Wikibase/Indexing/RDF_Dump_Format"
+    :description
+    "Wikidata has no single canonical prefix-list page; this combines \
+the RDF-dump namespace prefixes documented at its `:source' URL with \
+the PREFIX block conventionally used at the top of Wikidata \
+EntitySchemas, e.g. https://www.wikidata.org/wiki/EntitySchema:E10."
+    :prefixes
+    (("bd" . "http://www.bigdata.com/rdf#")
+     ("geo" . "http://www.opengis.net/ont/geosparql#")
+     ("owl" . "http://www.w3.org/2002/07/owl#")
+     ("p" . "http://www.wikidata.org/prop/")
+     ("pq" . "http://www.wikidata.org/prop/qualifier/")
+     ("pqn" . "http://www.wikidata.org/prop/qualifier/value-normalized/")
+     ("pqv" . "http://www.wikidata.org/prop/qualifier/value/")
+     ("pr" . "http://www.wikidata.org/prop/reference/")
+     ("prn" . "http://www.wikidata.org/prop/reference/value-normalized/")
+     ("prov" . "http://www.w3.org/ns/prov#")
+     ("prv" . "http://www.wikidata.org/prop/reference/value/")
+     ("ps" . "http://www.wikidata.org/prop/statement/")
+     ("psn" . "http://www.wikidata.org/prop/statement/value-normalized/")
+     ("psv" . "http://www.wikidata.org/prop/statement/value/")
+     ("rdf" . "http://www.w3.org/1999/02/22-rdf-syntax-ns#")
+     ("rdfs" . "http://www.w3.org/2000/01/rdf-schema#")
+     ("schema" . "http://schema.org/")
+     ("skos" . "http://www.w3.org/2004/02/skos/core#")
+     ("wd" . "http://www.wikidata.org/entity/")
+     ("wdata" . "https://www.wikidata.org/wiki/Special:EntityData/")
+     ("wdno" . "http://www.wikidata.org/prop/novalue/")
+     ("wdref" . "http://www.wikidata.org/reference/")
+     ("wds" . "http://www.wikidata.org/entity/statement/")
+     ("wdt" . "http://www.wikidata.org/prop/direct/")
+     ("wdtn" . "http://www.wikidata.org/prop/direct-normalized/")
+     ("wdv" . "http://www.wikidata.org/value/")
+     ("wikibase" . "http://wikiba.se/ontology#")
+     ("xsd" . "http://www.w3.org/2001/XMLSchema#")))
+  "Prefix map for Wikidata's RDF/EntitySchema namespaces.
+See `:description' for the (two) sources this was compiled from.")
+
+(defcustom shexc-ts-mode-prefix-maps
+  `(("rdfa" . ,shexc-ts-mode--prefix-map-rdfa)
+    ("wikidata" . ,shexc-ts-mode--prefix-map-wikidata))
+  "Alist of named prefix maps, for `shexc-ts-mode-prefix-map' to select.
+
+Each element is (NAME . PLIST), where NAME is a string (matched
+against `shexc-ts-mode-prefix-map') and PLIST has the keys:
+
+  `:source'      URL where the map is authoritatively published, or nil.
+  `:description' Free-form text on the map's provenance/contents.
+  `:prefixes'    Alist of (PREFIX . IRI) strings, e.g.
+                 (\"rdf\" . \"http://www.w3.org/1999/02/22-rdf-syntax-ns#\").
+
+Add your own by appending more (NAME . PLIST) elements, e.g. in your
+init file:
+
+  (with-eval-after-load \\='shexc-ts-mode
+    (push \\='(\"my-project\"
+            :source \"https://example.org/my-prefixes\"
+            :description \"Prefixes used across my-project's schemas.\"
+            :prefixes ((\"ex\" . \"http://example.org/ns#\")))
+          shexc-ts-mode-prefix-maps))"
+  :type 'sexp
+  :group 'shexc-ts)
+
+(defcustom shexc-ts-mode-prefix-map "rdfa"
+  "Name of the active entry in `shexc-ts-mode-prefix-maps'.
+
+`shexc-ts-mode-insert-prefix' and the \"Undefined prefix\" flymake
+diagnostic (`shexc-ts-mode--flymake-undefined-prefixes') look up
+undeclared prefixes here.  Set this as a file- or directory-local
+variable to use a different map in specific buffers, e.g.
+\"wikidata\" when editing Wikidata EntitySchemas."
+  :type 'string
+  :safe #'stringp
+  :group 'shexc-ts)
+
 ;;; Syntax table
 
 (defvar shexc-ts-mode--syntax-table nil
@@ -1517,10 +1661,93 @@ including the declaration."
 E.g. \"ex\" for both `ex:p1' and `ex:', and \"\" for `:p1'."
   (substring text 0 (string-search ":" text)))
 
+;;;; Prefix maps: lookup and insertion
+
+(defun shexc-ts-mode--prefix-map-lookup (prefix)
+  "Return the IRI for PREFIX in the active `shexc-ts-mode-prefix-map'.
+Return nil if PREFIX is empty, `shexc-ts-mode-prefix-map' has no entry
+in `shexc-ts-mode-prefix-maps', or that map has no entry for PREFIX."
+  (unless (string-empty-p prefix)
+    (let ((map (cdr (assoc shexc-ts-mode-prefix-map shexc-ts-mode-prefix-maps))))
+      (cdr (assoc prefix (plist-get map :prefixes))))))
+
+(defun shexc-ts-mode--prefixed-name-at (pos)
+  "Return the `prefixed_name' node at POS, or nil if none."
+  (treesit-parent-until
+   (treesit-node-at pos)
+   (lambda (n) (string= (treesit-node-type n) "prefixed_name"))
+   t))
+
+(defun shexc-ts-mode--insert-prefix-decl (prefix iri)
+  "Insert the line `PREFIX PREFIX: <IRI>' into the current buffer.
+It is placed immediately after the buffer's last
+`base_decl'/`prefix_decl'/`import_decl', or at `point-min' if the
+buffer has none of those."
+  (let ((directives (treesit-query-capture
+                      (treesit-buffer-root-node)
+                      '([(base_decl) (prefix_decl) (import_decl)] @d)
+                      nil nil t)))
+    (if directives
+        (progn
+          (goto-char (apply #'max (mapcar #'treesit-node-end directives)))
+          (end-of-line)
+          (if (eobp)
+              (insert "\n")
+            (forward-char 1)))
+      (goto-char (point-min)))
+    (insert (format "PREFIX %s: <%s>\n" prefix iri))))
+
+;;;###autoload
+(defun shexc-ts-mode-insert-prefix ()
+  "Insert a `PREFIX' declaration for the prefixed name at point.
+
+Looks up the prefix of the `prefixed_name' at point (e.g. \"ex\" in
+`ex:Foo') in the active `shexc-ts-mode-prefix-map' and, if found there,
+inserts `PREFIX ex: <IRI>' via `shexc-ts-mode--insert-prefix-decl'.
+
+Signals a `user-error' if point is not on a prefixed name, or its
+prefix has no entry in the active map -- in the latter case, either
+add the prefix to `shexc-ts-mode-prefix-maps' or declare it directly
+with `PREFIX ex: <...>'."
+  (interactive)
+  (let ((node (shexc-ts-mode--prefixed-name-at (point))))
+    (unless node
+      (user-error "No prefixed name at point"))
+    (let* ((prefix (shexc-ts-mode--prefix-name (treesit-node-text node t)))
+           (iri (shexc-ts-mode--prefix-map-lookup prefix)))
+      (unless iri
+        (user-error "Prefix `%s:' is not in the %s prefix map"
+                     prefix shexc-ts-mode-prefix-map))
+      (save-excursion (shexc-ts-mode--insert-prefix-decl prefix iri))
+      (message "Inserted `PREFIX %s: <%s>'" prefix iri))))
+
+;;;###autoload
+(defun shexc-ts-mode-set-prefix-map (name)
+  "Set the buffer-local active prefix map to NAME, for this buffer only.
+
+NAME must be a key of `shexc-ts-mode-prefix-maps' (e.g. \"rdfa\" or
+\"wikidata\"); `shexc-ts-mode-insert-prefix' and the \"Undefined
+prefix\" flymake diagnostic then look up prefixes in that map.
+
+This setting is buffer-local and does not persist when the buffer is
+reopened -- to make a choice persistent, set
+`shexc-ts-mode-prefix-map' as a file- or directory-local variable
+instead."
+  (interactive
+   (list (completing-read "Prefix map: "
+                           (mapcar #'car shexc-ts-mode-prefix-maps)
+                           nil t shexc-ts-mode-prefix-map)))
+  (setq-local shexc-ts-mode-prefix-map name)
+  (message "Active prefix map: %s" name))
+
 (defun shexc-ts-mode--flymake-undefined-prefixes ()
   "Return `:error' diagnostics for `prefixed_name's with an undeclared prefix.
 I.e. a `prefixed_name' (`ex:p1', `ex:', `x:Foo', a value-set IRI, a
-datatype, ...) whose prefix has no matching `PREFIX' declaration."
+datatype, ...) whose prefix has no matching `PREFIX' declaration.
+
+When the prefix has an entry in the active `shexc-ts-mode-prefix-map',
+the diagnostic message names the IRI that `shexc-ts-mode-insert-prefix'
+would declare for it."
   (let ((declared
          (mapcar (lambda (n) (shexc-ts-mode--prefix-name (treesit-node-text n t)))
                  (treesit-query-capture
@@ -1532,11 +1759,16 @@ datatype, ...) whose prefix has no matching `PREFIX' declaration."
              (let* ((text (treesit-node-text n t))
                     (prefix (shexc-ts-mode--prefix-name text)))
                (unless (member prefix declared)
-                 (flymake-make-diagnostic
-                  (current-buffer)
-                  (treesit-node-start n) (treesit-node-end n)
-                  :error
-                  (format "Undefined prefix %s:" prefix)))))
+                 (let ((iri (shexc-ts-mode--prefix-map-lookup prefix)))
+                   (flymake-make-diagnostic
+                    (current-buffer)
+                    (treesit-node-start n) (treesit-node-end n)
+                    :error
+                    (if iri
+                        (format "Undefined prefix %s: `M-x shexc-ts-mode-insert-prefix' \
+adds `PREFIX %s: <%s>' from the %s prefix map"
+                                prefix prefix iri shexc-ts-mode-prefix-map)
+                      (format "Undefined prefix %s:" prefix)))))))
            (treesit-query-capture
             (treesit-buffer-root-node) '((prefixed_name) @n) nil nil t)))))
 
@@ -1727,7 +1959,21 @@ For use as a `transient' suffix description."
      :description
      (lambda () (shexc-ts-mode--menu-desc
                  "Toggle `#' / `/* */' comment style"
-                 'shexc-ts-mode-toggle-comment-style)))]
+                 'shexc-ts-mode-toggle-comment-style)))
+    ("P" shexc-ts-mode-insert-prefix
+     :description
+     (lambda ()
+       (shexc-ts-mode--menu-desc
+        (format "Insert `PREFIX' for prefix at point (%s map)"
+                shexc-ts-mode-prefix-map)
+        'shexc-ts-mode-insert-prefix)))
+    ("M" shexc-ts-mode-set-prefix-map
+     :description
+     (lambda ()
+       (shexc-ts-mode--menu-desc
+        (format "Switch active prefix map (currently %s)"
+                shexc-ts-mode-prefix-map)
+        'shexc-ts-mode-set-prefix-map)))]
    ["Manifest browser"
     :if shexc-ts-mode--manifest-browser-loaded-p
     ("p" shexc-ts-mode-toggle-manifest-browser-predicates
@@ -1776,6 +2022,10 @@ see the Setup section in shexc-ts-mode.el"))
   (define-key shexc-ts-mode-map (kbd "C-c C-u") #'shexc-ts-mode-unwrap-shape)
   (define-key shexc-ts-mode-map (kbd "C-c C-w") #'shexc-ts-mode-wrap-in-shape)
   (define-key shexc-ts-mode-map (kbd "C-c C-r") #'shexc-ts-mode-rename-shape)
+
+  ;; insert a `PREFIX' declaration for the prefix at point, looked up
+  ;; in the active `shexc-ts-mode-prefix-map'
+  (define-key shexc-ts-mode-map (kbd "C-c C-p") #'shexc-ts-mode-insert-prefix)
 
   ;; live "germane shapes" highlighting, following point
   (define-key shexc-ts-mode-map (kbd "C-c C-l") #'shexc-ts-mode-highlight-reachable-mode)

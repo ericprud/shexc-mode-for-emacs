@@ -118,6 +118,7 @@ description.
 | `C-c C-u`           | `shexc-ts-mode-unwrap-shape`              | Splice out a `<predicate> { ... }` wrapper |
 | `C-c C-w`           | `shexc-ts-mode-wrap-in-shape`             | Wrap the region in a new `<predicate> { ... }` |
 | `C-c C-r`           | `shexc-ts-mode-rename-shape`              | Rename a shape label everywhere it's used |
+| `C-c C-p`           | `shexc-ts-mode-insert-prefix`             | Insert a `PREFIX` decl for the prefix at point |
 | `C-c C-f`           | `shexc-ts-mode-toggle-fold`               | Fold/unfold the `{ ... }` body at point |
 | `C-c C-h`           | `shexc-ts-mode-highlight-reachable-mode`    | Live-highlight shapes germane to point |
 | `C-c C-c`           | `shexc-ts-mode-menu`                      | Open the `transient` feature menu |
@@ -276,6 +277,58 @@ including the declaration:
 
 Refuses to rename to a label that's already in use, or to a no-op (same
 label).
+
+### Prefix maps and `shexc-ts-mode-insert-prefix` (`C-c C-p`)
+
+`shexc-ts-mode-prefix-maps` is an alist of named, well-known
+prefix-to-IRI mappings, each annotated with where it's authoritatively
+published. Two are built in:
+
+- `"rdfa"` (the default) — the
+  [W3C RDFa Core 1.1 Initial Context](https://www.w3.org/2011/rdfa-context/rdfa-1.1),
+  the default vocabulary prefixes recognized by RDFa processors (Dublin
+  Core, FOAF, schema.org, the W3C's own vocabularies, etc.).
+- `"wikidata"` — Wikidata's RDF/EntitySchema namespace prefixes (`wd:`,
+  `wdt:`, `p:`/`ps:`/`pq:`/`pr:`/..., `wikibase:`, ...), compiled from the
+  [RDF dump format documentation](https://www.mediawiki.org/wiki/Wikibase/Indexing/RDF_Dump_Format)
+  and the `PREFIX` block conventionally used at the top of
+  [Wikidata EntitySchemas](https://www.wikidata.org/wiki/EntitySchema:E10).
+
+`shexc-ts-mode-prefix-map` (default `"rdfa"`) selects which map is active
+in a buffer. Set it as a file- or directory-local variable to use a
+different map for specific files, e.g. in a Wikidata EntitySchema buffer:
+
+```
+# Local Variables:
+# shexc-ts-mode-prefix-map: "wikidata"
+# End:
+```
+
+To switch the active map for just the current buffer (e.g. to try a
+different map without editing the file), use `M-x
+shexc-ts-mode-set-prefix-map`, also available from the feature menu
+(`C-c C-c`). This is buffer-local and not persisted — use the file- or
+directory-local variable above to make a choice stick.
+
+With point on a prefixed name (`ex:Foo`, `wd:Q5`, ...) whose prefix isn't
+declared, `C-c C-p` (`shexc-ts-mode-insert-prefix`) looks it up in the
+active map and inserts `PREFIX ex: <...>` after the buffer's last
+`BASE`/`PREFIX`/`IMPORT` declaration (or at the top of the buffer, if there
+are none). If the prefix isn't in the active map either, it signals an
+error — declare it by hand, or add it to `shexc-ts-mode-prefix-maps` first.
+
+Add your own maps by pushing additional `(NAME :source ... :description
+... :prefixes ((PREFIX . IRI) ...))` entries onto
+`shexc-ts-mode-prefix-maps`, e.g. in your init file:
+
+```elisp
+(with-eval-after-load 'shexc-ts-mode
+  (push '("my-project"
+          :source "https://example.org/my-prefixes"
+          :description "Prefixes used across my-project's schemas."
+          :prefixes (("ex" . "http://example.org/ns#")))
+        shexc-ts-mode-prefix-maps))
+```
 
 ### Navigation
 
@@ -508,7 +561,10 @@ turns on `flymake-mode` automatically, reporting these diagnostics:
   `&<#Typo>`, `start = @<#Typo>`) whose label has no matching
   `shape_expr_decl` in the buffer.
 - **Errors** — a prefixed name (`x:p2`, a value-set IRI, a datatype, ...)
-  whose prefix has no matching `PREFIX x: <...>` declaration.
+  whose prefix has no matching `PREFIX x: <...>` declaration. If the prefix
+  is in the active [prefix map](#prefix-maps-and-shexc-ts-mode-insert-prefix-c-c-c-p),
+  the message names the IRI that `C-c C-p`
+  (`shexc-ts-mode-insert-prefix`) would declare for it.
 - **Errors** — text the tree-sitter parser couldn't make sense of, e.g. the
   `p3` in `ex: p3 . ;` (`ex:` alone is a valid, if unusual, prefixed name
   with an empty local part — naming the namespace IRI itself — so the parser
