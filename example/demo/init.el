@@ -17,8 +17,6 @@
 ;; Start with no shapes/predicates highlighted, so the demo can turn each
 ;; highlight-reachable category on one at a time and show the effect.
 (setq shexc-ts-mode-highlight-reachable-include-current nil
-      shexc-ts-mode-highlight-reachable-include-current-predicates nil
       shexc-ts-mode-highlight-reachable-include-non-extended nil
-      shexc-ts-mode-highlight-reachable-include-non-extended-predicates nil
       shexc-ts-mode-highlight-reachable-include-extended nil
-      shexc-ts-mode-highlight-reachable-include-extended-predicates nil)
+      shexc-ts-mode-highlight-reachable-include-predicates nil)

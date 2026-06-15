@@ -75,21 +75,7 @@ Ctrl+c
 Ctrl+c
 Show
 Sleep 1500ms
-Type "H"
-Hide
-
-Ctrl+c
-Ctrl+c
-Show
-Sleep 1500ms
 Type "x"
-Hide
-
-Ctrl+c
-Ctrl+c
-Show
-Sleep 1500ms
-Type "X"
 Hide
 
 Ctrl+c
@@ -103,7 +89,14 @@ Ctrl+c
 Ctrl+c
 Show
 Sleep 1500ms
-Type "E"
+Type "t"
+Hide
+
+Ctrl+c
+Ctrl+c
+Show
+Sleep 1500ms
+Type "p"
 Hide
 
 Ctrl+c
