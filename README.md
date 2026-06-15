@@ -78,27 +78,38 @@ description.
 
 ### Setup
 
-You'll need Emacs 29+ (built with tree-sitter support) and a compiled copy of
-the `tree-sitter-shexc` grammar:
-
-```sh
-git clone https://github.com/ericprud/tree-sitter-shexc
-tree-sitter build -o ~/.emacs.d/tree-sitter/libtree-sitter-shexc.dylib tree-sitter-shexc
-```
-
-(On Linux, the output filename would be `libtree-sitter-shexc.so`.)
-
-Then in your init file:
+You'll need Emacs 29+ (built with tree-sitter support). `shexc-ts-mode` also
+needs a compiled copy of the `tree-sitter-shexc` grammar, which is *not*
+bundled with the package (MELPA only ships Lisp source, and a prebuilt binary
+for every OS/architecture isn't practical) — you build it once, locally:
 
 ```lisp
-(add-to-list 'load-path "{folder that contains shexc-ts-mode.el}")
+(add-to-list 'load-path "{folder that contains shexc-ts-mode.el}")  ; unless installed from MELPA
 (require 'shexc-ts-mode)
-
-;; tell Emacs where to find the compiled grammar
-(add-to-list 'treesit-extra-load-path (expand-file-name "~/.emacs.d/tree-sitter/"))
 
 (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode))
 ```
+
+then run `M-x shexc-ts-mode-install-grammar`. This clones
+[tree-sitter-shexc](https://github.com/ericprud/tree-sitter-shexc) and
+compiles it with the C compiler/linker on `exec-path` (so you'll need `git`
+and a C toolchain — e.g. Xcode Command Line Tools on macOS, `gcc`/`build-essential`
+on Linux), installing the result into the `tree-sitter` subdirectory of
+`user-emacs-directory` (e.g. `~/.emacs.d/tree-sitter/`), which Emacs searches
+for grammars by default. On success it also activates `shexc-ts-mode` for
+`.shex`/`.shexc` files immediately, without restarting Emacs.
+
+If the machine running Emacs has no C compiler (e.g. some minimal/locked-down
+setups), build the grammar elsewhere instead and copy the result over:
+
+```sh
+git clone https://github.com/ericprud/tree-sitter-shexc
+tree-sitter build -o libtree-sitter-shexc.so tree-sitter-shexc   # .dylib on macOS, .dll on Windows
+```
+
+— then copy `libtree-sitter-shexc.{so,dylib,dll}` into
+`~/.emacs.d/tree-sitter/` on the target machine and restart Emacs (or
+re-evaluate the `auto-mode-alist` line above).
 
 ### Comments: `#` line comments and `/* ... */` block comments
 

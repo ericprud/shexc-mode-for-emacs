@@ -31,9 +31,9 @@
 ;;
 ;; (require 'shexc-ts-mode)
 ;;
-;; ;; tell Emacs where to find the compiled grammar (built with
-;; ;; `tree-sitter build -o ~/.emacs.d/tree-sitter/libtree-sitter-shexc.dylib /path/to/tree-sitter-shexc')
-;; (add-to-list 'treesit-extra-load-path (expand-file-name "~/.emacs.d/tree-sitter/"))
+;; ;; one-time: download and compile the `tree-sitter-shexc' grammar
+;; ;; (requires `git', a C compiler, and a linker on `exec-path')
+;; M-x shexc-ts-mode-install-grammar
 ;;
 ;; (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode))
 
@@ -58,6 +58,32 @@
 ;; defined by `define-derived-mode' below; forward-declared so the
 ;; feature menu (which closes over it) can refer to it.
 (defvar shexc-ts-mode-map)
+
+;; Recipe for `M-x shexc-ts-mode-install-grammar' (and
+;; `treesit-install-language-grammar' generally) to build the
+;; `tree-sitter-shexc' grammar; see the Setup section in the README.
+(add-to-list 'treesit-language-source-alist
+             '(shexc "https://github.com/ericprud/tree-sitter-shexc"))
+
+;;;###autoload
+(defun shexc-ts-mode-install-grammar ()
+  "Download and compile the `tree-sitter-shexc' grammar for `shexc-ts-mode'.
+
+This calls `treesit-install-language-grammar', which clones
+https://github.com/ericprud/tree-sitter-shexc and compiles it with a
+C compiler (also requires `git' and a linker on `exec-path'), then
+installs the result into the \"tree-sitter\" subdirectory of
+`user-emacs-directory' -- one of the places Emacs looks for grammars
+by default.
+
+On success, also adds `.shex'/`.shexc' files to `auto-mode-alist' for
+`shexc-ts-mode', so they take effect immediately without restarting
+Emacs."
+  (interactive)
+  (treesit-install-language-grammar 'shexc)
+  (when (treesit-ready-p 'shexc t)
+    (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode))
+    (message "shexc-ts-mode: grammar installed; `.shex'/`.shexc' files now use `shexc-ts-mode'")))
 
 (defgroup shexc-ts nil
   "Major mode for editing ShExC documents with tree-sitter."
