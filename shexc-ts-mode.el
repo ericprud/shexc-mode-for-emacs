@@ -270,12 +270,7 @@ variable to use a different map in specific buffers, e.g.
 
 ;;; Syntax table
 
-(defvar shexc-ts-mode--syntax-table nil
-  "Syntax table for `shexc-ts-mode'.")
-;; Use `setq' (not just `defvar') so that `load-file'/`eval-buffer'
-;; always rebuilds the table -- `defvar' is a no-op when the variable
-;; is already bound.
-(setq shexc-ts-mode--syntax-table
+(defvar shexc-ts-mode--syntax-table
   (let ((table (make-syntax-table)))
     ;; block comments: "/* ... */" (style a -- pairs with / and *)
     ;; line comments:  "# ..."    (style b -- pairs with # and \n)
@@ -294,7 +289,8 @@ variable to use a different map in specific buffers, e.g.
     (modify-syntax-entry ?? "." table)
     (modify-syntax-entry ?| "." table)
     (modify-syntax-entry ?^ "." table)
-    table))
+    table)
+  "Syntax table for `shexc-ts-mode'.")
 
 ;; `#' both starts a line comment ("# ...") *and* routinely appears
 ;; inside `irireference's, e.g. the fragment separators in `<#Shape>'
