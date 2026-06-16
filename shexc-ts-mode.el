@@ -62,8 +62,14 @@
 ;; Recipe for `M-x shexc-ts-mode-install-grammar' (and
 ;; `treesit-install-language-grammar' generally) to build the
 ;; `tree-sitter-shexc' grammar; see the Setup section in the README.
+;;
+;; Pinned to a commit whose parser.c targets ABI 14 (LANGUAGE_VERSION 14),
+;; compatible with Emacs 29.1+ and Emacs 30+.  ABI 14 is backward-compatible
+;; with Emacs 30, so no version-based switching is needed: updating this pin
+;; is the only change required if a future grammar version ever needs ABI 15.
 (add-to-list 'treesit-language-source-alist
-             '(shexc "https://github.com/ericprud/tree-sitter-shexc"))
+             '(shexc "https://github.com/ericprud/tree-sitter-shexc"
+                     "83a6fb833e7d6e8cb05f594cd83913c51e5ac0a4"))
 
 ;;;###autoload
 (defun shexc-ts-mode-install-grammar ()
@@ -93,9 +99,11 @@ libtree-sitter-shexc.so/.dylib into %s -- see the shexc-ts-mode README"
   (pcase (treesit-language-available-p 'shexc t)
     (`(nil version-mismatch ,ver)
      (user-error "shexc-ts-mode: grammar ABI version %s is not supported \
-by this Emacs %s -- ABI 14 requires Emacs 29.1+, ABI 15 requires Emacs 30+; \
-upgrade Emacs and run `M-x shexc-ts-mode-install-grammar' again"
-                 ver emacs-version))
+by this Emacs %s (ABI 14 requires Emacs 29.1+).  \
+If a stale .so remains from a previous install, delete %s and try again"
+                 ver emacs-version
+                 (expand-file-name "libtree-sitter-shexc.so"
+                                   (locate-user-emacs-file "tree-sitter"))))
     (`(nil . ,_)
      (user-error "shexc-ts-mode: grammar build failed -- \
 check the *Warnings* buffer for details, or copy a pre-built \
