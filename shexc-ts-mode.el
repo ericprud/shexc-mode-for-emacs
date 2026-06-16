@@ -90,15 +90,21 @@ found on `exec-path'.  Install one, or copy a pre-built \
 libtree-sitter-shexc.so/.dylib into %s -- see the shexc-ts-mode README"
                 (locate-user-emacs-file "tree-sitter")))
   (treesit-install-language-grammar 'shexc)
-  (if (treesit-ready-p 'shexc t)
-      (progn
-        (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode))
-        (message "shexc-ts-mode: grammar installed; \
-`.shex'/`.shexc' files now use `shexc-ts-mode'"))
-    (user-error "shexc-ts-mode: grammar build failed -- \
+  (pcase (treesit-language-available-p 'shexc t)
+    (`(nil version-mismatch ,ver)
+     (user-error "shexc-ts-mode: grammar ABI version %s is not supported \
+by this Emacs %s -- ABI 14 requires Emacs 29.1+, ABI 15 requires Emacs 30+; \
+upgrade Emacs and run `M-x shexc-ts-mode-install-grammar' again"
+                 ver emacs-version))
+    (`(nil . ,_)
+     (user-error "shexc-ts-mode: grammar build failed -- \
 check the *Warnings* buffer for details, or copy a pre-built \
 libtree-sitter-shexc.so/.dylib into %s"
-                (locate-user-emacs-file "tree-sitter"))))
+                 (locate-user-emacs-file "tree-sitter")))
+    (_
+     (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode))
+     (message "shexc-ts-mode: grammar installed; \
+`.shex'/`.shexc' files now use `shexc-ts-mode'"))))
 
 (defgroup shexc-ts nil
   "Major mode for editing ShExC documents with tree-sitter."
