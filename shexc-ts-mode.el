@@ -69,21 +69,36 @@
 (defun shexc-ts-mode-install-grammar ()
   "Download and compile the `tree-sitter-shexc' grammar for `shexc-ts-mode'.
 
-This calls `treesit-install-language-grammar', which clones
-https://github.com/ericprud/tree-sitter-shexc and compiles it with a
-C compiler (also requires `git' and a linker on `exec-path'), then
-installs the result into the \"tree-sitter\" subdirectory of
-`user-emacs-directory' -- one of the places Emacs looks for grammars
-by default.
+Clones https://github.com/ericprud/tree-sitter-shexc and compiles it,
+installing the result into the \"tree-sitter\" subdirectory of
+`user-emacs-directory' (one of the places Emacs searches for grammars
+by default).  On success, `.shex'/`.shexc' files are immediately
+associated with `shexc-ts-mode' in the current session.
 
-On success, also adds `.shex'/`.shexc' files to `auto-mode-alist' for
-`shexc-ts-mode', so they take effect immediately without restarting
-Emacs."
+Requires `git', a C compiler (`cc', `gcc', or `c99'), and a linker on
+`exec-path'.  If the machine running Emacs has no C compiler, build
+the grammar on another machine and copy the resulting
+`libtree-sitter-shexc.so' (Linux) / `.dylib' (macOS) / `.dll'
+(Windows) into the tree-sitter subdirectory of `user-emacs-directory';
+see the shexc-ts-mode README for details."
   (interactive)
+  (unless (executable-find "git")
+    (user-error "Cannot install grammar: `git' not found on `exec-path'"))
+  (unless (seq-find #'executable-find '("cc" "gcc" "c99"))
+    (user-error "Cannot install grammar: no C compiler (cc, gcc, or c99) \
+found on `exec-path'.  Install one, or copy a pre-built \
+libtree-sitter-shexc.so/.dylib into %s -- see the shexc-ts-mode README"
+                (locate-user-emacs-file "tree-sitter")))
   (treesit-install-language-grammar 'shexc)
-  (when (treesit-ready-p 'shexc t)
-    (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode))
-    (message "shexc-ts-mode: grammar installed; `.shex'/`.shexc' files now use `shexc-ts-mode'")))
+  (if (treesit-ready-p 'shexc t)
+      (progn
+        (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode))
+        (message "shexc-ts-mode: grammar installed; \
+`.shex'/`.shexc' files now use `shexc-ts-mode'"))
+    (user-error "shexc-ts-mode: grammar build failed -- \
+check the *Warnings* buffer for details, or copy a pre-built \
+libtree-sitter-shexc.so/.dylib into %s"
+                (locate-user-emacs-file "tree-sitter"))))
 
 (defgroup shexc-ts nil
   "Major mode for editing ShExC documents with tree-sitter."
@@ -2157,8 +2172,13 @@ For use as a `transient' suffix description."
 \\{shexc-ts-mode-map}"
   :syntax-table shexc-ts-mode--syntax-table
   (unless (treesit-ready-p 'shexc)
-    (error "Tree-sitter grammar for `shexc' is not available -- \
-see the Setup section in shexc-ts-mode.el"))
+    (unless noninteractive
+      (when (y-or-n-p "Tree-sitter grammar for `shexc' not found.  \
+Install it now? (requires git and a C compiler on exec-path) ")
+        (shexc-ts-mode-install-grammar)))
+    (unless (treesit-ready-p 'shexc)
+      (error "Tree-sitter grammar for `shexc' is not available; \
+run M-x shexc-ts-mode-install-grammar")))
 
   (treesit-parser-create 'shexc)
 
