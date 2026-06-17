@@ -224,16 +224,76 @@ be pushed one line further out, silently swallowing a blank line."
     (insert (if (string-suffix-p "\n" new-text) (substring new-text 0 -1) new-text))
     (indent-region beg (point))))
 
+;; ---------------------------------------------------------------------
+;; Reusing the buffer's own PREFIX/BASE declarations when decompiling
+;; ---------------------------------------------------------------------
+
+(defun shexc-ts-mode-convert--directive-ctx ()
+  "A `shexc-shexj--ctx' reflecting every BASE/PREFIX declaration in the
+current buffer's `shex_doc', applied in document order exactly as the
+compiler would -- i.e. the BASE/PREFIX table active by the *end* of the
+buffer.  Reuses the compiler's own directive-application code (rather
+than re-deriving the same escaping/resolution rules here) since
+base/prefix decls can only ever appear as direct top-level children of
+the root."
+  (let ((ctx (shexc-shexj--make-ctx)))
+    (dolist (c (treesit-node-children (treesit-buffer-root-node) t))
+      (pcase (treesit-node-type c)
+        ("base_decl" (shexc-shexj--apply-base ctx c))
+        ("prefix_decl" (shexc-shexj--apply-prefix ctx c))))
+    ctx))
+
+(defun shexc-ts-mode-convert--safe-pn-local-p (s)
+  "Whether S can be emitted as a PN_LOCAL with no `%XX'/backslash
+escaping -- deliberately conservative (e.g. rejects a trailing `.',
+which PN_LOCAL disallows unescaped): false negatives just mean a
+shortening opportunity is missed, never that something unparseable
+gets emitted."
+  (and (not (string-empty-p s))
+       (string-match-p "\\`[A-Za-z0-9_][A-Za-z0-9_.-]*\\'" s)
+       (not (string-suffix-p "." s))))
+
+(defun shexc-ts-mode-convert--shorten-iri (ctx iri)
+  "Try to shorten IRI using CTX's PREFIX table (longest-namespace-match,
+local part verified safe to emit unescaped) or, failing that, CTX's
+BASE (verified by re-resolving the candidate relative form and
+confirming it reproduces IRI exactly, so an unanticipated quirk of IRI-
+relative-resolution can never silently produce the wrong reference).
+Returns the complete replacement token (`prefix:local' or `<relative>'),
+or nil if neither applies -- meaning \"emit the full `<IRI>' as-is\'."
+  (let (best-prefix best-ns)
+    (maphash (lambda (name ns)
+               (when (and (string-prefix-p ns iri)
+                          (or (not best-ns) (> (length ns) (length best-ns))))
+                 (setq best-prefix name best-ns ns)))
+             (shexc-shexj--ctx-prefixes ctx))
+    (cond
+     ((and best-ns
+           (shexc-ts-mode-convert--safe-pn-local-p (substring iri (length best-ns))))
+      (concat best-prefix (substring iri (length best-ns))))
+     ((let ((base (shexc-shexj--ctx-base ctx)))
+        (and base (string-prefix-p base iri)
+             (let ((relative (substring iri (length base))))
+               (and (equal (url-expand-file-name relative base) iri) relative))))
+      (concat "<" (let ((base (shexc-shexj--ctx-base ctx))) (substring iri (length base))) ">"))
+     (t nil))))
+
 ;;;###autoload
 (defun shexc-ts-mode-convert-fence-to-shexc ()
   "Convert the ShExJ/ShExR fence at point back to ShExC text, replacing
-the whole fence (BEGIN line through END line inclusive)."
+the whole fence (BEGIN line through END line inclusive).  IRIs that
+match a PREFIX or BASE already declared elsewhere in the buffer are
+shortened accordingly (see `shexc-ts-mode-convert--shorten-iri');
+nothing is ever *added* to the buffer's own declarations."
   (interactive)
   (let ((fence (shexc-ts-mode-convert--fence-at (point))))
     (unless fence
       (user-error "No shexc-ts-mode ShExJ/ShExR fence here"))
-    (shexc-ts-mode-convert--replace-fence
-     fence (shexc-shexj-decompile (shexc-ts-mode-convert--fence-tree fence)))))
+    (let* ((ctx (shexc-ts-mode-convert--directive-ctx))
+           (shexc-shexj-decompile-iri-shortener
+            (lambda (iri) (shexc-ts-mode-convert--shorten-iri ctx iri))))
+      (shexc-ts-mode-convert--replace-fence
+       fence (shexc-shexj-decompile (shexc-ts-mode-convert--fence-tree fence))))))
 
 (defun shexc-ts-mode-convert--fence-to-other-fence (fence target-kind renderer)
   "Replace FENCE with a new fence of TARGET-KIND (\"SHEXJ\"/\"SHEXR\"),

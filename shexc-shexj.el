@@ -876,13 +876,28 @@ context active at NODE's position."
 ;; ---------------------------------------------------------------------
 ;; Decompiler: value-tree -> ShExC text.  Far simpler than the compiler
 ;; -- no ambiguity to resolve, just a `:type'-dispatched structural walk.
-;; Always emits explicit AND/OR (never implicit juxtaposition), always
-;; emits full `<IRI>' forms (never reconstructs `prefix:local'
-;; shorthand), and emits "reasonably line-broken" text relying on the
-;; caller to `indent-region' the result afterward -- see plan notes.
+;; Always emits explicit AND/OR (never implicit juxtaposition), and
+;; emits "reasonably line-broken" text relying on the caller to
+;; `indent-region' the result afterward -- see plan notes.  By default
+;; also always emits full `<IRI>' forms (never reconstructs
+;; `prefix:local'/BASE-relative shorthand, since a value-tree has no
+;; prefix table of its own) -- but see
+;; `shexc-shexj-decompile-iri-shortener' for callers (e.g.
+;; `shexc-ts-mode-convert.el') that have one to offer.
 ;; ---------------------------------------------------------------------
 
-(defun shexc-shexj--decompile-iri (iri) (concat "<" iri ">"))
+(defvar shexc-shexj-decompile-iri-shortener nil
+  "When non-nil, a function called as (FUNC IRI) for every absolute IRI
+`shexc-shexj-decompile' is about to emit in `<IRI>' form.  Returning a
+non-nil string (e.g. \"ex:Foo\" or \"<#Foo>\", a complete replacement
+token including any needed `<>') uses that instead; returning nil
+falls back to the default full `<IRI>' form.  Let-bind this -- never
+`setq' it -- around a `shexc-shexj-decompile' call to get PREFIX/BASE-
+aware shorthand; nil by default, so plain callers are unaffected.")
+
+(defun shexc-shexj--decompile-iri (iri)
+  (or (and shexc-shexj-decompile-iri-shortener (funcall shexc-shexj-decompile-iri-shortener iri))
+      (concat "<" iri ">")))
 
 (defun shexc-shexj--decompile-label (iri-or-bnode)
   (if (string-prefix-p "_:" iri-or-bnode) iri-or-bnode (shexc-shexj--decompile-iri iri-or-bnode)))
