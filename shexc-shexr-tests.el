@@ -6,16 +6,28 @@
 
 ;;; Commentary:
 
-;; Unit tests against hand-written expected Turtle strings, one per
-;; grammar feature of the canonical ShExR shape (see shexc-shexr.el's
-;; Commentary) -- independent of the parser/UI and of shexc-shexj's
-;; compiler (the value-trees here are hand-built literals, not compiled
-;; from ShExC source).
+;; Two kinds of test:
+;; - Unit tests against hand-written expected Turtle strings, one per
+;;   grammar feature of the canonical ShExR shape (see shexc-shexr.el's
+;;   Commentary) -- independent of the parser/UI and of shexc-shexj's
+;;   compiler (the value-trees here are hand-built literals, not
+;;   compiled from ShExC source).
+;; - Per the project plan's check (c): a round-trip test, one per
+;;   shexSpec/shexTest manifest fixture (reusing shexc-shexj-tests.el's
+;;   `shexc-shexj-test-shextest-path' defcustom and manifest-reading
+;;   helpers) -- compile -> serialize -> parse -> compare the value-tree
+;;   to the pre-serialization one.  Deliberately NOT compared against
+;;   the upstream `.ttl' fixtures (different, non-canonical shape; see
+;;   shexc-shexr.el's Commentary for why) -- this only proves the
+;;   serializer and parser are faithful inverses of each other.
 
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'shexc-shexr)
+(require 'shexc-shexj)
+(require 'shexc-shexj-tests)
 
 (ert-deftest shexc-shexr-test-node-constraint ()
   (should (equal
@@ -29,7 +41,7 @@
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
             "  sx:shapeExpr [ a sx:NodeConstraint ;\n"
-            "  sx:datatype <http://a.example/dt> ;\n"
+            "  sx:datatype [ a sx:Ref ; sx:id <http://a.example/dt> ] ;\n"
             "  sx:nodeKind \"iri\" ] .\n"))))
 
 (ert-deftest shexc-shexr-test-extra-is-comma-list ()
@@ -70,8 +82,8 @@ and a Wildcard-stem IriStemRange."
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
             "  sx:shapeExpr [ a sx:NodeConstraint ;\n"
             "  sx:values (<http://a.example/v1> true [ a sx:IriStem ;\n"
-            "  sx:stem <http://a.example/#> ] [ a sx:IriStemRange ;\n"
-            "  sx:exclusions (<http://a.example/#x>) ;\n"
+            "  sx:stem [ a sx:Ref ; sx:id <http://a.example/#> ] ] [ a sx:IriStemRange ;\n"
+            "  sx:exclusions ([ a sx:Ref ; sx:id <http://a.example/#x> ]) ;\n"
             "  sx:stem [ a sx:Wildcard ] ]) ] .\n"))))
 
 (ert-deftest shexc-shexr-test-literal-stem-is-plain-text ()
@@ -95,8 +107,11 @@ IRI references -- unlike the structurally identical IriStemRange."
             "  sx:stem \"abc\" ]) ] .\n"))))
 
 (ert-deftest shexc-shexr-test-id-hoisting-and-include ()
-  "A :id-bearing TripleExpr is hoisted to its own top-level statement and
-referenced elsewhere by IRI -- not inlined twice."
+  "A :id-bearing TripleExpr is hoisted to its own top-level statement,
+referenced from its natural position by a naked IRI (`:expression', a
+nested-object position) and from an Include by a wrapped `sx:Ref'
+(`:expressions', a bare-string position) -- not inlined twice, and the
+two reference *forms* differ even though they point at the same IRI."
   (should (equal
            (shexc-shexr-serialize
             '(:type "Schema" :shapes
@@ -117,7 +132,36 @@ referenced elsewhere by IRI -- not inlined twice."
             "  sx:expression <http://a.example/E1> ] .\n"
             "\n<http://a.example/E1> a sx:EachOf ;\n"
             "  sx:expressions ([ a sx:TripleConstraint ;\n"
-            "  sx:predicate <http://a.example/p1> ] <http://a.example/E1>) .\n"))))
+            "  sx:predicate [ a sx:Ref ; sx:id <http://a.example/p1> ] ] [ a sx:Ref ; sx:id <http://a.example/E1> ]) .\n"))))
+
+(ert-deftest shexc-shexr-test-shape-ref-vs-hoisted-object-disambiguation ()
+  "A bare shape-ref string :valueExpr pointing at another ShapeDecl's id
+must be wrapped in `sx:Ref' -- confirmed empirically as a *real*
+ambiguity (kitchenSink.shex's `ex:reportedBy IRI @UserShape:'): every
+ShapeDecl is independently hoisted to its own top-level statement (it
+always carries an :id), so a naked `<IRI>' here would be
+indistinguishable from a reference to *that* hoisted statement, which
+must be dereferenced/embedded rather than kept as the bare string it
+actually is in the value-tree."
+  (should (equal
+           (shexc-shexr-serialize
+            '(:type "Schema" :shapes
+              ((:type "ShapeDecl" :id "http://a.example/S1"
+                :shapeExpr (:type "TripleConstraint" :predicate "http://a.example/p1"
+                            :valueExpr "http://a.example/S2"))
+               (:type "ShapeDecl" :id "http://a.example/S2"
+                :shapeExpr (:type "NodeConstraint" :nodeKind "iri")))))
+           (concat
+            "@prefix sx: <http://www.w3.org/ns/shex#> .\n\n"
+            "[] a sx:Schema ;\n"
+            "  sx:shapes (<http://a.example/S1> <http://a.example/S2>) .\n"
+            "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
+            "  sx:shapeExpr [ a sx:TripleConstraint ;\n"
+            "  sx:predicate [ a sx:Ref ; sx:id <http://a.example/p1> ] ;\n"
+            "  sx:valueExpr [ a sx:Ref ; sx:id <http://a.example/S2> ] ] .\n"
+            "\n<http://a.example/S2> a sx:ShapeDecl ;\n"
+            "  sx:shapeExpr [ a sx:NodeConstraint ;\n"
+            "  sx:nodeKind \"iri\" ] .\n"))))
 
 (ert-deftest shexc-shexr-test-shape-and-nested ()
   "Plain ShapeAnd of two NodeConstraints, exercising the generic
@@ -149,6 +193,56 @@ key of its own here)."
            (concat
             "@prefix sx: <http://www.w3.org/ns/shex#> .\n\n"
             "[] a sx:Schema .\n"))))
+
+;; ---------------------------------------------------------------------
+;; Round-trip tests against the shexSpec/shexTest corpus
+;; ---------------------------------------------------------------------
+
+(defconst shexc-shexr-test--known-unsupported
+  shexc-shexj-test--known-unsupported
+  "Same handful of fixtures excluded in shexc-shexj-tests.el (raw NUL/
+control bytes break tree-sitter-shexc's lexer before this code ever
+runs, so there's no value-tree to round-trip at all) -- see that
+constant's docstring.")
+
+(defun shexc-shexr-test--normalize (v)
+  "Like `shexc-shexj-test--normalize', but first dropping :context (which
+`shexc-shexr-serialize' deliberately omits -- it's JSON-LD-adapter
+metadata, not RDF content, see shexc-shexr.el's Commentary)."
+  (shexc-shexj-test--normalize
+   (if (and (consp v) (keywordp (car v)))
+       (let ((p (copy-sequence v))) (cl-remf p :context) p)
+     v)))
+
+(defun shexc-shexr-test--run-roundtrip (shex-file approved name)
+  (unless approved (ert-skip "manifest status is not mf:Approved"))
+  (when (member name shexc-shexr-test--known-unsupported)
+    (ert-skip "known tree-sitter-shexc lexer limitation -- see shexc-shexr-test--known-unsupported"))
+  (let* ((shex-path (expand-file-name (concat "schemas/" shex-file) shexc-shexj-test-shextest-path))
+         (compiled (shexc-shexj-test--compile-file shex-path))
+         (serialized (shexc-shexr-serialize compiled))
+         (parsed (shexc-shexr-parse serialized)))
+    (should (equal (shexc-shexr-test--normalize compiled) (shexc-shexr-test--normalize parsed)))))
+
+;;;###autoload
+(defun shexc-shexr-test-regenerate ()
+  "(Re)define one round-trip `ert-deftest' per shexTest schemas/ manifest entry."
+  (interactive)
+  (if (not shexc-shexj-test-shextest-path)
+      (eval '(ert-deftest shexc-shexr-test-shextest-not-configured ()
+               (ert-skip "shexc-shexj-test-shextest-path is unset -- see shexc-shexj-tests.el header"))
+            t)
+    (dolist (entry (shexc-shexj-test--manifest-entries))
+      (let* ((name (plist-get entry :name))
+             (status (plist-get entry :status))
+             (shex-file (plist-get entry :shex)))
+        (when shex-file
+          (eval `(ert-deftest ,(intern (format "shexc-shexr-test-roundtrip-%s" (shexc-shexj-test--sanitize-name name))) ()
+                   :tags '(shexc-shexr-shextest)
+                   (shexc-shexr-test--run-roundtrip ,shex-file ,(equal status "mf:Approved") ,name))
+                t))))))
+
+(shexc-shexr-test-regenerate)
 
 (provide 'shexc-shexr-tests)
 
