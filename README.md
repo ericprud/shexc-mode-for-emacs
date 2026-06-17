@@ -1,29 +1,20 @@
 # shexc-mode-for-emacs
 
-Emacs major modes for editing [ShExC](https://shex.io/shex-semantics/#shexc)
-(ShEx Compact Syntax) documents:
+`shexc-ts-mode` is a tree-sitter-based Emacs major mode (Emacs 29+) for
+editing [ShExC](https://shex.io/shex-semantics/#shexc) (ShEx Compact Syntax)
+documents, built on the grammar at
+[tree-sitter-shexc](https://github.com/ericprud/tree-sitter-shexc).
 
-- **`shexc-ts-mode`** — a tree-sitter-based mode (Emacs 29+), documented
-  below: structure-aware indentation and navigation, an `imenu` index,
-  `xref`, `flymake` diagnostics, live highlighting, and more.
-- **`shexc-mode`** — the original regexp-based mode, predating Emacs's
-  tree-sitter support. See the `;;; Commentary:` and `;;; Setup:` sections
-  at the top of [`shexc-mode.el`](shexc-mode.el) for its history and setup
-  instructions.
-
-## shexc-ts-mode (tree-sitter)
+## shexc-ts-mode
 
 ![Demo: opening example/person-extends.shex, flymake catches schema:name
 with an undeclared prefix, and the shexc-ts-mode-menu's "Insert PREFIX for
 prefix at point" command declares it from the RDFa prefix map; then, on the
 <Person> shapeDecl, shexc-ts-mode-highlight-reachable-mode is enabled and
 each highlight-reachable toggle (current shape/predicates, non-extended
-reachable, extended reachable) is switched on in turn](example/demo/demo.gif)
+reachable, extended reachable) is switched on in turn](example/demo/highlight.gif)
 
-`shexc-ts-mode.el` is a newer, tree-sitter-based
-companion mode built on the grammar at
-[tree-sitter-shexc](https://github.com/ericprud/tree-sitter-shexc). Compared
-to the original regexp-based `shexc-mode`, it adds:
+`shexc-ts-mode.el` provides:
 
 - structure-aware indentation (`indent-region`, `indent-for-tab-command`/`TAB`)
 - line and block commenting that knows about ShExC's nesting (`M-;` via `comment-dwim`)
@@ -32,7 +23,9 @@ to the original regexp-based `shexc-mode`, it adds:
   `imenu-list`, see [imenu and imenu-list](#imenu-and-imenu-list) below)
 - "jump to shape definition" / "find references to shape" via `xref`
   (`M-.` / `M-,` / `M-?`), resolving `@<#Shape>`, `EXTENDS @<#Shape>`,
-  `&<#Shape>` and `start = @<#Shape>` references to their declarations
+  `&<#Shape>` and `start = @<#Shape>` references to their declarations (see
+  [Jumping to/from shape references](#jumping-tofrom-shape-references-xref)
+  below)
 - structural defun-nav (`C-M-a` / `C-M-e`) and smart sexp navigation
   (`C-M-f` / `C-M-b`, `C-M-t`, `kill-sexp`, ...) that treat each shape
   declaration, EXTENDS clause, AND/OR/NOT operand and `{ ... }` body as a unit
@@ -301,6 +294,23 @@ starter and inside IRI text. `shexc-ts-mode` uses a `syntax-propertize`
 function backed by the parse tree to distinguish the two, ensuring that a
 `<#Shape> { ... }` opening line is not mistakenly treated as starting a comment
 that swallows the `{`.
+
+#### Jumping to/from shape references (`xref`)
+
+`M-.` (`xref-find-definitions`) jumps from a shape reference — `@<#Shape>`,
+`EXTENDS @<#Shape>`, `&<#Shape>`, `start = @<#Shape>` — to its
+`shape_expr_decl`. `M-,` (`xref-go-back`) returns to where you were before
+the jump; since `xref` tracks this as a genuine stack (not just a single
+"last position"), repeatedly pressing `M-.` to dive several references deep
+and then `M-,` the same number of times retraces your path back out, one
+level at a time. `M-?` (`xref-find-references`) lists every reference to the
+shape at point.
+
+![Demo: starting on <Person>, M-. follows @<Tools> to its declaration, then
+@<TGeek>, then @<Item>, then @<RoleCode> -- four levels deep through nested
+EXTENDS/shape references, with each chord echoed in the echo area; four
+presses of M-, then retrace the stack back up to the original
+@<Tools>](example/demo/navigate.gif)
 
 #### Structural defun-nav (`C-M-a` / `C-M-e`)
 
@@ -654,3 +664,15 @@ Here is the index of shapes for [fhir.shex](http://hl7.org/fhir/fhir.shex)
 shown in the right panel (buffer `*Ilist*`):
 
 ![](shex-imenu-list-fhir.png)
+
+## Can't get tree-sitter-shexc to compile?
+
+`shexc-ts-mode` needs a compiled `tree-sitter-shexc` grammar (see
+[Setup](#setup) above) — if your machine has no C compiler/linker and you
+can't get a prebuilt `libtree-sitter-shexc` onto it either, this repo also
+includes [`shexc-mode.el`](shexc-mode.el), the original regexp-based mode
+that predates Emacs's tree-sitter support and needs no grammar to build. It
+doesn't have `shexc-ts-mode`'s tree-sitter-backed indentation, structural
+navigation, `xref`, or `flymake` diagnostics, but it does provide syntax
+highlighting with no extra setup. See the `;;; Commentary:` and `;;; Setup:`
+sections at the top of the file for its history and setup instructions.

@@ -1,5 +1,5 @@
-# Regenerate with: cd example/demo && EMACS=/path/to/Emacs vhs demo.tape
-Output demo.gif
+# Regenerate with: cd example/demo && EMACS=/path/to/Emacs vhs highlight.tape
+Output highlight.gif
 
 Set Shell "bash"
 Set FontSize 15
