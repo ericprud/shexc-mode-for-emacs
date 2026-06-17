@@ -101,7 +101,15 @@ caught later by the JSON/Turtle parser itself."
 BEGIN..END span contains POS, or nil if POS isn't inside one, or the
 fence's BEGIN/END markers don't match (id, kind, or `lines=N' count) --
 treated the same as \"no fence here\" rather than guessing which part of
-a corrupted fence to trust."
+a corrupted fence to trust.
+
+BEG is the start of the BEGIN line; END is the end of the END line's own
+text, deliberately *not* past its trailing newline -- mirroring
+`shexc-ts-mode-convert--fence-text's deliberate lack of one, so that
+whatever followed the fence in the original buffer (a blank line, a
+following declaration, ...) is left entirely outside [BEG,END) and
+`shexc-ts-mode-convert--replace-fence' never has to either invent or
+swallow a newline to compensate."
   (save-excursion
     (goto-char pos)
     (beginning-of-line)
@@ -126,10 +134,9 @@ a corrupted fence to trust."
           (when (and (looking-at shexc-ts-mode-convert--end-re)
                      (equal (match-string 1) kind) (equal (match-string 2) id)
                      (= (string-to-number (match-string 3)) n))
-            (let ((content-end (point)))
-              (forward-line 1)
-              (when (<= begin-pos pos (1- (point)))
-                (list kind id begin-pos (point) content-beg content-end)))))))))
+            (let ((content-end (point)) (fence-end (match-end 0)))
+              (when (<= begin-pos pos fence-end)
+                (list kind id begin-pos fence-end content-beg content-end)))))))))
 
 ;; ---------------------------------------------------------------------
 ;; Convert-to-fence
@@ -204,11 +211,17 @@ into a value-tree."
 
 (defun shexc-ts-mode-convert--replace-fence (fence new-text)
   "Replace the whole of FENCE (BEGIN line through END line inclusive)
-with NEW-TEXT, re-indented."
+with NEW-TEXT, re-indented.  Whatever followed the fence in the buffer
+\(a blank line, the next declaration, ...\) sits immediately past END
+\(see `shexc-ts-mode-convert--fence-at') and is left untouched, so
+NEW-TEXT must supply no trailing newline of its own -- e.g.
+`shexc-shexj-decompile' always ends its output with one, unlike
+`shexc-ts-mode-convert--fence-text' -- or that original separator would
+be pushed one line further out, silently swallowing a blank line."
   (pcase-let ((`(,_kind ,_id ,beg ,end ,_content-beg ,_content-end) fence))
     (delete-region beg end)
     (goto-char beg)
-    (insert new-text)
+    (insert (if (string-suffix-p "\n" new-text) (substring new-text 0 -1) new-text))
     (indent-region beg (point))))
 
 ;;;###autoload
