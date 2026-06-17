@@ -654,21 +654,21 @@ it in place each time:
 `C-c C-v` once turns that into a fenced, pretty-printed JSON block —
 
 ```shexc
-# shexc-ts-mode:BEGIN-SHEXJ 1 lines=18
-# {
-#   "@context": "http://www.w3.org/ns/shex.jsonld",
-#   "type": "ShapeDecl",
-#   ...
-# }
-# shexc-ts-mode:END-SHEXJ 1 lines=18
+/* shexc-ts-mode:BEGIN-SHEXJ 1
+{
+  "@context": "http://www.w3.org/ns/shex.jsonld",
+  "type": "ShapeDecl",
+  ...
+}
+shexc-ts-mode:END-SHEXJ 1 */
 ```
 
-— which you can edit by hand (it's just `#`-comment text; the rest of the
-file's structure, indentation, `flymake`, `xref`, etc. are completely
-unaffected, since `comment` is valid anywhere in the grammar). `C-c C-v`
-again converts it onward to an equivalent ShExR/Turtle fence, and once more
-converts it back to ShExC — losing comments/whitespace from the fenced
-span, but preserving semantics.
+— which you can edit by hand (it's just a `/* ... */` block comment; the
+rest of the file's structure, indentation, `flymake`, `xref`, etc. are
+completely unaffected, since `comment` is valid anywhere in the grammar).
+`C-c C-v` again converts it onward to an equivalent ShExR/Turtle fence, and
+once more converts it back to ShExC — losing comments/whitespace from the
+fenced span, but preserving semantics.
 
 A few things worth knowing:
 
@@ -681,13 +681,17 @@ A few things worth knowing:
   additional `flymake` backend registered alongside the one described
   above) so you don't have to wait for the failed conversion attempt to find
   out.
-- The `lines=N` in each sentinel is a checksum — if you add or remove a
-  line inside a fence by hand without updating it, the fence stops being
-  recognized as one (also flagged by `flymake`).
-- ShExR has no concept of `PREFIX`, so converted IRIs are always written
-  out in full (`<http://...>`), even ones that started out as `ex:p1` in
-  the ShExC source — semantically identical, just not textually identical
-  after a round trip.
+- If you hand-edit the BEGIN/END marker lines themselves so they no longer
+  match (mismatched id, kind, or a missing END line entirely), the fence
+  stops being recognized as one (also flagged by `flymake`).
+- A literal `*/` inside the fenced content (e.g. in a regex-facet pattern
+  string) is auto-escaped with an invisible zero-width space so it can't
+  prematurely close the block comment; this is reversed transparently when
+  converting back, you never see it.
+- When converting back to ShExC, IRIs that match a `PREFIX` or `BASE`
+  already declared in the buffer are shortened accordingly; nothing is
+  ever *added* to the buffer's own declarations, so an IRI with no
+  matching prefix/base is still written out in full.
 
 ### Feature menu (`C-c C-c`)
 

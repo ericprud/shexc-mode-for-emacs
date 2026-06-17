@@ -16,21 +16,28 @@
 ;; shexc-shexj.el/shexc-shexr.el for the compiler/decompiler and
 ;; serializer/parser this is built on).
 ;;
-;; The converted region is fenced as a run of ordinary `#'-prefixed line
-;; comments with sentinel markers:
+;; The converted region is fenced as a single `/* ... */' block comment
+;; with sentinel markers on its first/last lines:
 ;;
-;;   # shexc-ts-mode:BEGIN-SHEXJ <id> lines=N
-;;   # <one line of pretty-printed JSON>
-;;   # ...
-;;   # shexc-ts-mode:END-SHEXJ <id> lines=N
+;;   /* shexc-ts-mode:BEGIN-SHEXJ <id>
+;;   <pretty-printed JSON, however many lines>
+;;   shexc-ts-mode:END-SHEXJ <id> */
 ;;
 ;; (`-SHEXR' for Turtle.)  Since `comment' is declared as a tree-sitter
 ;; `extras' token (grammar.js), this keeps the rest of the file's parse
 ;; tree completely unaffected -- no ERROR nodes, nothing to teach font-
 ;; lock/indent/xref/flymake about -- and answers "what happens on save"
 ;; trivially: it's just text, byte for byte, like any other comment.
-;; The `lines=N' count is cheap insurance against a truncated/corrupted
-;; fence being silently mis-parsed.
+;; tree-sitter-shexc's `/* ... */' lexer (like C's) has no escape
+;; mechanism of its own -- it matches the *first* literal `*/' it finds
+;; -- so a content `*/' (e.g. inside a regex-facet pattern string) would
+;; prematurely terminate the comment.  `shexc-ts-mode-convert--escape-
+;; content' defuses every such occurrence before embedding the content,
+;; and `--unescape-content' reverses it on the way back out -- this is
+;; the one bit of complexity `#'-prefixed line comments didn't need;
+;; the win is a single comment node `shexc-ts-mode-convert--fence-at'
+;; can locate directly via `treesit-node-at', rather than scanning
+;; buffer lines by hand.
 ;;
 ;; Commands: `shexc-ts-mode-convert-to-shexj', `-to-shexr',
 ;; `-fence-to-shexc' (auto-detects direction from the sentinel), and
@@ -63,80 +70,69 @@
 ;; Fence format
 ;; ---------------------------------------------------------------------
 
-(defconst shexc-ts-mode-convert--begin-re
-  "^# shexc-ts-mode:BEGIN-\\(SHEXJ\\|SHEXR\\) \\([0-9]+\\) lines=\\([0-9]+\\)$")
-(defconst shexc-ts-mode-convert--end-re
-  "^# shexc-ts-mode:END-\\(SHEXJ\\|SHEXR\\) \\([0-9]+\\) lines=\\([0-9]+\\)$")
+(defconst shexc-ts-mode-convert--zwsp (string ?\x200b)
+  "Zero-width space (U+200B), used to defuse a literal `*/' inside fenced
+content -- see `shexc-ts-mode-convert--escape-content'.")
+
+(defconst shexc-ts-mode-convert--fence-re
+  (concat "\\`/\\* shexc-ts-mode:BEGIN-\\(SHEXJ\\|SHEXR\\) \\([0-9]+\\)\n"
+          "\\(\\(?:.\\|\n\\)*\\)"
+          "\nshexc-ts-mode:END-\\1 \\2 \\*/\\'")
+  "Matches a whole fence's text -- a `comment' node's `treesit-node-text'
+\(including the `/*'/`*/' delimiters\) -- against `string-match'.  Group
+1: KIND.  Group 2: ID.  Group 3: the content, still
+`shexc-ts-mode-convert--escape-content'-escaped.  The `\\1' backreference
+requires the END marker's KIND/ID to match the BEGIN marker's exactly.")
 
 (defvar-local shexc-ts-mode-convert--next-id 0
   "Per-buffer counter for fence ids.  Cosmetic only -- the id has no
 semantic meaning, it just makes two adjacent fences visually
 distinguishable and a stray BEGIN/END mismatch easier to spot by eye.")
 
+(defun shexc-ts-mode-convert--escape-content (text)
+  "Insert a zero-width space between every literal `*' and `/' in TEXT,
+so it can be embedded in a `/* ... */' block comment without
+prematurely terminating it -- tree-sitter-shexc's comment lexer (like
+C's) has no escape mechanism of its own, it just scans for the first
+literal `*/'.  `shexc-ts-mode-convert--unescape-content' reverses this."
+  (replace-regexp-in-string "\\*/" (concat "*" shexc-ts-mode-convert--zwsp "/") text nil t))
+
+(defun shexc-ts-mode-convert--unescape-content (text)
+  (replace-regexp-in-string (regexp-quote shexc-ts-mode-convert--zwsp) "" text nil t))
+
 (defun shexc-ts-mode-convert--fence-text (kind id text)
   "KIND is \"SHEXJ\" or \"SHEXR\"; TEXT is the pretty-printed content."
-  (let* ((lines (split-string text "\n"))
-         (lines (if (and lines (string-empty-p (car (last lines)))) (butlast lines) lines))
-         (n (length lines)))
-    (concat
-     (format "# shexc-ts-mode:BEGIN-%s %d lines=%d\n" kind id n)
-     (mapconcat (lambda (l) (concat "# " l "\n")) lines "")
-     (format "# shexc-ts-mode:END-%s %d lines=%d" kind id n))))
+  (let ((body (if (string-suffix-p "\n" text) (substring text 0 -1) text)))
+    (format "/* shexc-ts-mode:BEGIN-%s %d\n%s\nshexc-ts-mode:END-%s %d */"
+            kind id (shexc-ts-mode-convert--escape-content body) kind id)))
 
-(defun shexc-ts-mode-convert--strip-fence-prefixes (beg end)
-  "Strip the `# ' line-comment prefix from each line in the buffer span
-[BEG,END).  Tolerates a line missing its prefix (e.g. a hand-edit that
-deleted it) by stripping a bare `#' or nothing at all, rather than
-hard-failing here -- malformed *content* under the stripped prefix is
-caught later by the JSON/Turtle parser itself."
-  (let ((lines (seq-remove #'string-empty-p
-                            (split-string (buffer-substring-no-properties beg end) "\n"))))
-    (mapconcat (lambda (l) (cond ((string-prefix-p "# " l) (substring l 2))
-                                  ((string-prefix-p "#" l) (substring l 1))
-                                  (t l)))
-               lines "\n")))
+(defun shexc-ts-mode-convert--comment-node-at (pos)
+  (let ((node (treesit-node-at pos)))
+    (and node (string= (treesit-node-type node) "comment") node)))
 
 (defun shexc-ts-mode-convert--fence-at (pos)
-  "Return (KIND ID BEG END CONTENT-BEG CONTENT-END) for the fence whose
-BEGIN..END span contains POS, or nil if POS isn't inside one, or the
-fence's BEGIN/END markers don't match (id, kind, or `lines=N' count) --
-treated the same as \"no fence here\" rather than guessing which part of
-a corrupted fence to trust.
+  "Return (KIND ID BEG END CONTENT) for the fence comment containing POS,
+or nil if POS isn't inside (or just past the closing `*/' of) one, or
+the comment's BEGIN/END markers don't match -- treated the same as \"no
+fence here\" rather than guessing which part of a corrupted fence to
+trust.
 
-BEG is the start of the BEGIN line; END is the end of the END line's own
-text, deliberately *not* past its trailing newline -- mirroring
-`shexc-ts-mode-convert--fence-text's deliberate lack of one, so that
-whatever followed the fence in the original buffer (a blank line, a
-following declaration, ...) is left entirely outside [BEG,END) and
-`shexc-ts-mode-convert--replace-fence' never has to either invent or
-swallow a newline to compensate."
-  (save-excursion
-    (goto-char pos)
-    (beginning-of-line)
-    (let (begin-pos kind id n (first t))
-      (catch 'done
-        (while t
-          (cond
-           ((looking-at shexc-ts-mode-convert--begin-re)
-            (setq begin-pos (point) kind (match-string 1) id (match-string 2)
-                  n (string-to-number (match-string 3)))
-            (throw 'done nil))
-           ;; An END line only means "gone too far" on a line we've moved
-           ;; to while scanning backward -- POS itself may legitimately
-           ;; start out sitting on its own fence's END line.
-           ((and (not first) (looking-at shexc-ts-mode-convert--end-re)) (throw 'done nil))
-           ((bobp) (throw 'done nil))
-           (t (setq first nil) (forward-line -1)))))
-      (when begin-pos
-        (forward-line 1)
-        (let ((content-beg (point)))
-          (forward-line n)
-          (when (and (looking-at shexc-ts-mode-convert--end-re)
-                     (equal (match-string 1) kind) (equal (match-string 2) id)
-                     (= (string-to-number (match-string 3)) n))
-            (let ((content-end (point)) (fence-end (match-end 0)))
-              (when (<= begin-pos pos fence-end)
-                (list kind id begin-pos fence-end content-beg content-end)))))))))
+BEG/END are the comment node's own `treesit-node-start'/`-end' -- the
+exact `/* ... */' span, nothing more -- so whatever followed the fence
+in the original buffer (a blank line, the next declaration, ...) is
+always left untouched outside [BEG,END).  CONTENT has already been
+unescaped (see `shexc-ts-mode-convert--unescape-content')."
+  (let* ((node (or (shexc-ts-mode-convert--comment-node-at pos)
+                   ;; Point naturally ends up right *after* the closing
+                   ;; `*/' after inserting a fresh fence -- check one
+                   ;; character back too, rather than requiring the
+                   ;; caller to know to reposition first.
+                   (shexc-ts-mode-convert--comment-node-at (1- pos))))
+         (text (and node (treesit-node-text node t))))
+    (when (and text (string-match shexc-ts-mode-convert--fence-re text))
+      (list (match-string 1 text) (match-string 2 text)
+            (treesit-node-start node) (treesit-node-end node)
+            (shexc-ts-mode-convert--unescape-content (match-string 3 text))))))
 
 ;; ---------------------------------------------------------------------
 ;; Convert-to-fence
@@ -161,6 +157,16 @@ the whole buffer if no single decl encloses it); else the
         (list (treesit-node-start decl) (treesit-node-end decl) (shexc-shexj-compile-node decl))
       (list (point-min) (point-max) (shexc-shexj-compile-buffer)))))
 
+(defun shexc-ts-mode-convert--indent-fence-opening-line (beg)
+  "Indent just the line starting at BEG -- the fence's opening `/*
+shexc-ts-mode:BEGIN-...' line -- to the correct column for its
+context, without touching anything after it.  Inserted fence text is
+already fully, correctly indented internally by the JSON/Turtle
+serializer; `indent-region' over the whole span would instead flatten
+or re-derive every interior line's indentation as if it were ShExC
+code continuing a multi-line comment, destroying that nesting."
+  (save-excursion (goto-char beg) (indent-according-to-mode)))
+
 (defun shexc-ts-mode-convert--do (renderer kind)
   (pcase-let ((`(,beg ,end ,tree) (shexc-ts-mode-convert--target)))
     (let* ((text (funcall renderer tree))
@@ -169,21 +175,21 @@ the whole buffer if no single decl encloses it); else the
       (delete-region beg end)
       (goto-char beg)
       (insert fence)
-      (indent-region beg (point)))))
+      (shexc-ts-mode-convert--indent-fence-opening-line beg))))
 
 ;;;###autoload
 (defun shexc-ts-mode-convert-to-shexj ()
   "Convert the shape/schema at point (or active region) to ShExJ, in
-place, fenced as `#'-comments.  See this file's Commentary for the
-fence format and `shexc-ts-mode-convert--target' for what \"the shape/
-schema at point\" means."
+place, fenced as a `/* ... */' block comment.  See this file's
+Commentary for the fence format and `shexc-ts-mode-convert--target' for
+what \"the shape/schema at point\" means."
   (interactive)
   (shexc-ts-mode-convert--do #'shexc-shexj-to-json "SHEXJ"))
 
 ;;;###autoload
 (defun shexc-ts-mode-convert-to-shexr ()
   "Convert the shape/schema at point (or active region) to ShExR
-\(canonical Turtle\), in place, fenced as `#'-comments."
+\(canonical Turtle\), in place, fenced as a `/* ... */' block comment."
   (interactive)
   (shexc-ts-mode-convert--do #'shexc-shexr-serialize "SHEXR"))
 
@@ -205,24 +211,33 @@ runs and the buffer is left untouched."
 (defun shexc-ts-mode-convert--fence-tree (fence)
   "Parse FENCE's (as returned by `shexc-ts-mode-convert--fence-at') content
 into a value-tree."
-  (pcase-let ((`(,kind ,_id ,_beg ,_end ,content-beg ,content-end) fence))
-    (shexc-ts-mode-convert--parse-fence-content
-     kind (shexc-ts-mode-convert--strip-fence-prefixes content-beg content-end))))
+  (pcase-let ((`(,kind ,_id ,_beg ,_end ,content) fence))
+    (shexc-ts-mode-convert--parse-fence-content kind content)))
 
-(defun shexc-ts-mode-convert--replace-fence (fence new-text)
-  "Replace the whole of FENCE (BEGIN line through END line inclusive)
-with NEW-TEXT, re-indented.  Whatever followed the fence in the buffer
-\(a blank line, the next declaration, ...\) sits immediately past END
-\(see `shexc-ts-mode-convert--fence-at') and is left untouched, so
-NEW-TEXT must supply no trailing newline of its own -- e.g.
-`shexc-shexj-decompile' always ends its output with one, unlike
-`shexc-ts-mode-convert--fence-text' -- or that original separator would
-be pushed one line further out, silently swallowing a blank line."
-  (pcase-let ((`(,_kind ,_id ,beg ,end ,_content-beg ,_content-end) fence))
+(defun shexc-ts-mode-convert--replace-fence (fence new-text &optional new-text-is-fence)
+  "Replace the whole of FENCE (the `/* ... */' comment, in full) with
+NEW-TEXT.  Whatever followed the fence in the buffer (a blank line, the
+next declaration, ...) sits immediately past END (see
+`shexc-ts-mode-convert--fence-at') and is left untouched, so NEW-TEXT
+must supply no trailing newline of its own -- e.g. `shexc-shexj-decompile'
+always ends its output with one, unlike `shexc-ts-mode-convert--fence-text'
+-- or that original separator would be pushed one line further out,
+silently swallowing a blank line.
+
+NEW-TEXT-IS-FENCE selects how NEW-TEXT gets indented: nil (NEW-TEXT is
+real ShExC code, e.g. from `shexc-shexj-decompile', which doesn't
+attempt its own indentation) runs `indent-region' over the whole span
+as usual; non-nil (NEW-TEXT is itself a freshly built fence, already
+fully and correctly indented internally by the JSON/Turtle serializer)
+only indents the opening line -- see
+`shexc-ts-mode-convert--indent-fence-opening-line'."
+  (pcase-let ((`(,_kind ,_id ,beg ,end ,_content) fence))
     (delete-region beg end)
     (goto-char beg)
     (insert (if (string-suffix-p "\n" new-text) (substring new-text 0 -1) new-text))
-    (indent-region beg (point))))
+    (if new-text-is-fence
+        (shexc-ts-mode-convert--indent-fence-opening-line beg)
+      (indent-region beg (point)))))
 
 ;; ---------------------------------------------------------------------
 ;; Reusing the buffer's own PREFIX/BASE declarations when decompiling
@@ -281,10 +296,10 @@ or nil if neither applies -- meaning \"emit the full `<IRI>' as-is\'."
 ;;;###autoload
 (defun shexc-ts-mode-convert-fence-to-shexc ()
   "Convert the ShExJ/ShExR fence at point back to ShExC text, replacing
-the whole fence (BEGIN line through END line inclusive).  IRIs that
-match a PREFIX or BASE already declared elsewhere in the buffer are
-shortened accordingly (see `shexc-ts-mode-convert--shorten-iri');
-nothing is ever *added* to the buffer's own declarations."
+the whole fence (the `/* ... */' comment, in full).  IRIs that match a
+PREFIX or BASE already declared elsewhere in the buffer are shortened
+accordingly (see `shexc-ts-mode-convert--shorten-iri'); nothing is
+ever *added* to the buffer's own declarations."
   (interactive)
   (let ((fence (shexc-ts-mode-convert--fence-at (point))))
     (unless fence
@@ -301,7 +316,7 @@ rendering FENCE's parsed value-tree via RENDERER."
   (let* ((tree (shexc-ts-mode-convert--fence-tree fence))
          (text (funcall renderer tree))
          (id (cl-incf shexc-ts-mode-convert--next-id)))
-    (shexc-ts-mode-convert--replace-fence fence (shexc-ts-mode-convert--fence-text target-kind id text))))
+    (shexc-ts-mode-convert--replace-fence fence (shexc-ts-mode-convert--fence-text target-kind id text) t)))
 
 ;; ---------------------------------------------------------------------
 ;; Dispatcher and menu
@@ -353,33 +368,37 @@ back to ShExC, closing the loop."
 ;; Flymake: flag a fence that doesn't parse, or whose markers don't match
 ;; ---------------------------------------------------------------------
 
+(defun shexc-ts-mode-convert--fence-candidate-comments ()
+  "Every `comment' node in the buffer that looks like it's trying to be
+a shexc-ts-mode fence (starts with the BEGIN sentinel), whether or not
+it actually parses as one -- the candidates `shexc-ts-mode-convert--
+flymake-fence-errors' checks."
+  (seq-filter
+   (lambda (node) (string-prefix-p "/* shexc-ts-mode:BEGIN-" (treesit-node-text node t)))
+   (treesit-query-capture (treesit-buffer-root-node) '((comment) @c) nil nil t)))
+
 (defun shexc-ts-mode-convert--flymake-fence-errors ()
   "One flymake diagnostic per malformed fenced ShExJ/ShExR block in the
 current buffer."
   (let (diags)
-    (save-excursion
-      (goto-char (point-min))
-      (while (re-search-forward shexc-ts-mode-convert--begin-re nil t)
-        (let* ((begin-pos (line-beginning-position))
-               (fence (shexc-ts-mode-convert--fence-at begin-pos)))
-          (if (not fence)
-              (push (flymake-make-diagnostic
-                     (current-buffer) begin-pos (line-end-position)
-                     :error "shexc-ts-mode: malformed fence (missing/mismatched END marker or wrong `lines=N')")
-                    diags)
-            (pcase-let ((`(,kind ,_id ,_beg ,_end ,content-beg ,content-end) fence))
-              (let ((content (shexc-ts-mode-convert--strip-fence-prefixes content-beg content-end)))
-                (condition-case err
-                    (pcase kind
-                      ("SHEXJ" (shexc-shexj-from-json content))
-                      ("SHEXR" (shexc-shexr-parse content)))
-                  (error
-                   (push (flymake-make-diagnostic
-                          (current-buffer) content-beg content-end
-                          :error (format "shexc-ts-mode: cannot parse fenced %s: %s"
-                                          kind (error-message-string err)))
-                         diags)))))))
-        (goto-char (line-end-position))))
+    (dolist (node (shexc-ts-mode-convert--fence-candidate-comments))
+      (let ((fence (shexc-ts-mode-convert--fence-at (treesit-node-start node))))
+        (if (not fence)
+            (push (flymake-make-diagnostic
+                   (current-buffer) (treesit-node-start node) (treesit-node-end node)
+                   :error "shexc-ts-mode: malformed fence (missing/mismatched END marker)")
+                  diags)
+          (pcase-let ((`(,kind ,_id ,beg ,end ,content) fence))
+            (condition-case err
+                (pcase kind
+                  ("SHEXJ" (shexc-shexj-from-json content))
+                  ("SHEXR" (shexc-shexr-parse content)))
+              (error
+               (push (flymake-make-diagnostic
+                      (current-buffer) beg end
+                      :error (format "shexc-ts-mode: cannot parse fenced %s: %s"
+                                      kind (error-message-string err)))
+                     diags)))))))
     (nreverse diags)))
 
 (defun shexc-ts-mode-convert--flymake-backend (report-fn &rest _args)
