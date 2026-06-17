@@ -40,9 +40,11 @@
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
-            "  sx:shapeExpr [ a sx:NodeConstraint ;\n"
-            "  sx:datatype [ a sx:Ref ; sx:id <http://a.example/dt> ] ;\n"
-            "  sx:nodeKind \"iri\" ] .\n"))))
+            "  sx:shapeExpr [\n"
+            "    a sx:NodeConstraint ;\n"
+            "    sx:datatype [ a sx:Ref ; sx:id <http://a.example/dt> ] ;\n"
+            "    sx:nodeKind \"iri\"\n"
+            "  ] .\n"))))
 
 (ert-deftest shexc-shexr-test-extra-is-comma-list ()
   "EXTRA is the one array-typed property that's a comma-list, not an RDF list."
@@ -57,9 +59,11 @@
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
-            "  sx:shapeExpr [ a sx:Shape ;\n"
-            "  sx:closed true ;\n"
-            "  sx:extra <http://a.example/p1>, <http://a.example/p2> ] .\n"))))
+            "  sx:shapeExpr [\n"
+            "    a sx:Shape ;\n"
+            "    sx:closed true ;\n"
+            "    sx:extra <http://a.example/p1>, <http://a.example/p2>\n"
+            "  ] .\n"))))
 
 (ert-deftest shexc-shexr-test-values-stems-wildcard-boolean ()
   "Value-set entries: bare IRI, native xsd:boolean keyword, IriStem,
@@ -80,11 +84,19 @@ and a Wildcard-stem IriStemRange."
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
-            "  sx:shapeExpr [ a sx:NodeConstraint ;\n"
-            "  sx:values (<http://a.example/v1> true [ a sx:IriStem ;\n"
-            "  sx:stem [ a sx:Ref ; sx:id <http://a.example/#> ] ] [ a sx:IriStemRange ;\n"
-            "  sx:exclusions ([ a sx:Ref ; sx:id <http://a.example/#x> ]) ;\n"
-            "  sx:stem [ a sx:Wildcard ] ]) ] .\n"))))
+            "  sx:shapeExpr [\n"
+            "    a sx:NodeConstraint ;\n"
+            "    sx:values (\n"
+            "      <http://a.example/v1>\n"
+            "      true\n"
+            "      [ a sx:IriStem ; sx:stem [ a sx:Ref ; sx:id <http://a.example/#> ] ]\n"
+            "      [\n"
+            "        a sx:IriStemRange ;\n"
+            "        sx:exclusions ([ a sx:Ref ; sx:id <http://a.example/#x> ]) ;\n"
+            "        sx:stem [ a sx:Wildcard ]\n"
+            "      ]\n"
+            "    )\n"
+            "  ] .\n"))))
 
 (ert-deftest shexc-shexr-test-literal-stem-is-plain-text ()
   "A LiteralStemRange's :stem/:exclusions are plain Turtle strings, not
@@ -101,10 +113,12 @@ IRI references -- unlike the structurally identical IriStemRange."
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
-            "  sx:shapeExpr [ a sx:NodeConstraint ;\n"
-            "  sx:values ([ a sx:LiteralStemRange ;\n"
-            "  sx:exclusions (\"abcdef\") ;\n"
-            "  sx:stem \"abc\" ]) ] .\n"))))
+            "  sx:shapeExpr [\n"
+            "    a sx:NodeConstraint ;\n"
+            "    sx:values (\n"
+            "      [ a sx:LiteralStemRange ; sx:exclusions (\"abcdef\") ; sx:stem \"abc\" ]\n"
+            "    )\n"
+            "  ] .\n"))))
 
 (ert-deftest shexc-shexr-test-id-hoisting-and-include ()
   "A :id-bearing TripleExpr is hoisted to its own top-level statement,
@@ -128,11 +142,15 @@ two reference *forms* differ even though they point at the same IRI."
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
-            "  sx:shapeExpr [ a sx:Shape ;\n"
-            "  sx:expression <http://a.example/E1> ] .\n"
+            "  sx:shapeExpr [ a sx:Shape ; sx:expression <http://a.example/E1> ] .\n"
             "\n<http://a.example/E1> a sx:EachOf ;\n"
-            "  sx:expressions ([ a sx:TripleConstraint ;\n"
-            "  sx:predicate [ a sx:Ref ; sx:id <http://a.example/p1> ] ] [ a sx:Ref ; sx:id <http://a.example/E1> ]) .\n"))))
+            "  sx:expressions (\n"
+            "    [\n"
+            "      a sx:TripleConstraint ;\n"
+            "      sx:predicate [ a sx:Ref ; sx:id <http://a.example/p1> ]\n"
+            "    ]\n"
+            "    [ a sx:Ref ; sx:id <http://a.example/E1> ]\n"
+            "  ) .\n"))))
 
 (ert-deftest shexc-shexr-test-shape-ref-vs-hoisted-object-disambiguation ()
   "A bare shape-ref string :valueExpr pointing at another ShapeDecl's id
@@ -156,12 +174,13 @@ actually is in the value-tree."
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1> <http://a.example/S2>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
-            "  sx:shapeExpr [ a sx:TripleConstraint ;\n"
-            "  sx:predicate [ a sx:Ref ; sx:id <http://a.example/p1> ] ;\n"
-            "  sx:valueExpr [ a sx:Ref ; sx:id <http://a.example/S2> ] ] .\n"
+            "  sx:shapeExpr [\n"
+            "    a sx:TripleConstraint ;\n"
+            "    sx:predicate [ a sx:Ref ; sx:id <http://a.example/p1> ] ;\n"
+            "    sx:valueExpr [ a sx:Ref ; sx:id <http://a.example/S2> ]\n"
+            "  ] .\n"
             "\n<http://a.example/S2> a sx:ShapeDecl ;\n"
-            "  sx:shapeExpr [ a sx:NodeConstraint ;\n"
-            "  sx:nodeKind \"iri\" ] .\n"))))
+            "  sx:shapeExpr [ a sx:NodeConstraint ; sx:nodeKind \"iri\" ] .\n"))))
 
 (ert-deftest shexc-shexr-test-shape-and-nested ()
   "Plain ShapeAnd of two NodeConstraints, exercising the generic
@@ -181,10 +200,13 @@ key of its own here)."
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
-            "  sx:shapeExpr [ a sx:ShapeAnd ;\n"
-            "  sx:shapeExprs ([ a sx:NodeConstraint ;\n"
-            "  sx:nodeKind \"iri\" ] [ a sx:NodeConstraint ;\n"
-            "  sx:pattern \"^x\" ]) ] .\n"))))
+            "  sx:shapeExpr [\n"
+            "    a sx:ShapeAnd ;\n"
+            "    sx:shapeExprs (\n"
+            "      [ a sx:NodeConstraint ; sx:nodeKind \"iri\" ]\n"
+            "      [ a sx:NodeConstraint ; sx:pattern \"^x\" ]\n"
+            "    )\n"
+            "  ] .\n"))))
 
 (ert-deftest shexc-shexr-test-context-excluded ()
   "Schema's :context is JSON-LD-adapter metadata, not RDF content."

@@ -18,8 +18,13 @@
 ;; (`shexc-shexr-parse', a later milestone) only ever needs to recognize
 ;; this exact shape, never general Turtle/N3.
 ;;
-;; Canonical shape, fixed by construction (see `shexc-shexr--serialize-body'
-;; and `shexc-shexr--serialize-value'):
+;; Canonical shape, fixed by construction (see `shexc-shexr--pretty-body'
+;; and `shexc-shexr--pretty-value'):
+;; - A nested `[ ... ]'/`( ... )' pair renders on one line if it fits
+;;   within `shexc-shexr--fill-column' at its actual starting column;
+;;   otherwise it breaks, one child per line, each indented two spaces
+;;   deeper than its enclosing line, with the closing bracket back at the
+;;   enclosing line's own indent (never aligned to the bracket's column).
 ;; - One prefix, `@prefix sx: <http://www.w3.org/ns/shex#> .'; every other
 ;;   IRI always full `<...>'.
 ;; - Every value-tree node with a non-nil `:id' is hoisted to its own
@@ -53,7 +58,7 @@
 (require 'pcase)
 
 (defconst shexc-shexr--prefix-line
-  "@prefix sx: <http://www.w3.org/ns/shex#> .\n\n")
+  "@prefix sx: <http://www.w3.org/ns/shex#> .\n")
 
 (defconst shexc-shexr--xsd-boolean-iri "http://www.w3.org/2001/XMLSchema#boolean")
 
@@ -68,6 +73,86 @@ narrow parser can rely on a predictable position.")
   '(:code :pattern :flags :languageTag :nodeKind)
   "Property keys whose string value is canonical plain text (a Turtle
 string literal), never an IRI/blank-node-label reference.")
+
+(defconst shexc-shexr--fill-column 80
+  "A nested `[ ... ]'/`( ... )' pair is kept on one line if it fits within
+this column count at its actual starting column; otherwise it's broken
+across multiple lines, indented two spaces deeper than its enclosing
+line.  Purely a pretty-printing convention -- the narrow parser is
+whitespace-agnostic and accepts either form anywhere.")
+
+;; ---------------------------------------------------------------------
+;; Optional IRI shortening against a caller-supplied PREFIX/BASE table
+;; (typically the converting ShExC buffer's own declarations -- see
+;; shexc-ts-mode-convert.el).  `shexc-shexr-serialize' takes PREFIXES/
+;; BASE as plain data (an alist, a string) rather than depending on
+;; shexc-shexj's `ctx' struct, per this file's existing boundary (see
+;; "Plist utilities" above) -- and re-implements the small longest-
+;; namespace-match/safe-PN_LOCAL policy locally rather than calling
+;; `shexc-ts-mode-convert--shorten-iri', for the same reason: this file
+;; doesn't depend on shexc-ts-mode-convert.el at all today, and a single
+;; ~15-line policy isn't worth introducing that dependency for.  Unlike
+;; PREFIX/BASE-shortening on the way *back* to ShExC (which never adds
+;; new declarations, since the buffer already has them), the fence here
+;; must be self-contained Turtle the narrow parser can resolve with no
+;; buffer context at all -- so only the PREFIX/BASE entries actually
+;; used get a header line, in ShExC's own `PREFIX name: <ns>'/`BASE
+;; <ns>' syntax (no `@prefix'/trailing `.') -- distinct from the fixed
+;; `@prefix sx: <...> .' vocabulary line, the one part of this format
+;; that's really meant to be read as Turtle.
+
+(defun shexc-shexr--safe-pn-local-p (s)
+  "Whether S can be emitted as a PN_LOCAL with no `%XX'/backslash
+escaping -- deliberately conservative (e.g. rejects a trailing `.',
+which PN_LOCAL disallows unescaped): false negatives just mean a
+shortening opportunity is missed, never that something unparseable
+gets emitted."
+  (and (not (string-empty-p s))
+       (string-match-p "\\`[A-Za-z0-9_][A-Za-z0-9_.-]*\\'" s)
+       (not (string-suffix-p "." s))))
+
+(defvar shexc-shexr--shorten-fn nil
+  "Dynamically bound by `shexc-shexr-serialize' to a function IRI ->
+shortened token string or nil; nil itself (the default -- e.g. for
+direct/test calls with no PREFIXES/BASE) means never shorten.")
+
+(defvar shexc-shexr--used-prefixes nil
+  "Dynamically bound by `shexc-shexr-serialize'; see
+`shexc-shexr--make-shortener'.")
+
+(defvar shexc-shexr--used-base nil
+  "Dynamically bound by `shexc-shexr-serialize'; see
+`shexc-shexr--make-shortener'.")
+
+(declare-function url-expand-file-name "url-expand" (url &optional default))
+
+(defun shexc-shexr--make-shortener (prefixes base)
+  "Return a function IRI -> shortened token string or nil, from PREFIXES
+\(an alist of (NAME . NAMESPACE-IRI)) and BASE (a namespace IRI string
+or nil) -- longest-namespace-match against PREFIXES first, then BASE
+\(verified by re-resolving the candidate relative form, so an
+unanticipated quirk of IRI-relative-resolution can never silently
+produce the wrong reference).  Records every PREFIXES NAME actually
+used onto `shexc-shexr--used-prefixes', and whether BASE was used onto
+`shexc-shexr--used-base' -- both dynamically bound by
+`shexc-shexr-serialize' around the call, so the caller knows which
+header lines to emit."
+  (lambda (iri)
+    (let (best-name best-ns)
+      (dolist (entry prefixes)
+        (when (and (string-prefix-p (cdr entry) iri)
+                   (or (not best-ns) (> (length (cdr entry)) (length best-ns))))
+          (setq best-name (car entry) best-ns (cdr entry))))
+      (cond
+       ((and best-ns (shexc-shexr--safe-pn-local-p (substring iri (length best-ns))))
+        (push best-name shexc-shexr--used-prefixes)
+        (concat best-name ":" (substring iri (length best-ns))))
+       ((and base (string-prefix-p base iri)
+             (let ((relative (substring iri (length base))))
+               (and (equal (url-expand-file-name relative base) iri) relative)))
+        (setq shexc-shexr--used-base t)
+        (concat "<" (substring iri (length base)) ">"))
+       (t nil)))))
 
 ;; ---------------------------------------------------------------------
 ;; Plist utilities (kept local rather than reaching into shexc-shexj's
@@ -119,7 +204,10 @@ ACC) every plist sub-node carrying a non-nil `:id'."
 
 (defun shexc-shexr--ref-text (id)
   "ID is an absolute IRI string or a `_:label' blank-node-label string."
-  (if (string-prefix-p "_:" id) id (concat "<" id ">")))
+  (cond
+   ((string-prefix-p "_:" id) id)
+   ((and shexc-shexr--shorten-fn (funcall shexc-shexr--shorten-fn id)))
+   (t (concat "<" id ">"))))
 
 (defun shexc-shexr--turtle-string (text)
   (concat "\""
@@ -192,7 +280,26 @@ the parser can always tell the two apart syntactically.  See
 `shexc-shexr--key-string-mode' for why this disambiguation is needed."
   (concat "[ a sx:Ref ; sx:id " (shexc-shexr--ref-text id) " ]"))
 
-(defun shexc-shexr--serialize-value (v &optional string-mode)
+(defun shexc-shexr--sort-keys (keys)
+  "KEYS in canonical order: alphabetical, with the \"big nested\"
+properties (`shexc-shexr--last-sorted-keys') sorted last."
+  (let ((last (seq-filter (lambda (k) (memq k shexc-shexr--last-sorted-keys)) keys))
+        (rest (seq-remove (lambda (k) (memq k shexc-shexr--last-sorted-keys)) keys)))
+    (append (sort rest (lambda (a b) (string< (symbol-name a) (symbol-name b)))) last)))
+
+(defun shexc-shexr--node-keys (node)
+  "NODE's property keys (excluding `:type'/`:id'/`:context'), in canonical
+order.  `:context' is JSON-LD-adapter metadata (see shexc-shexj.el's
+@context handling), not real RDF content -- excluded here so the narrow
+parser never has to special-case it."
+  (shexc-shexr--sort-keys
+   (remq :context (remq :type (remq :id (shexc-shexr--plist-keys node))))))
+
+;; -- Flat rendering: always one line, no indentation/breaking -- used both
+;; as the actual compact output and, via its length, as the input to the
+;; fits-on-one-line check in the pretty (depth-aware) renderer below.
+
+(defun shexc-shexr--flat-value (v &optional string-mode)
   "STRING-MODE, when V is a bare string, selects how to render it: `plain'
 for a Turtle string literal, `value' for a value-set/Annotation-object
 entry, `ref' (the default) for a wrapped `sx:Ref' id-reference -- see
@@ -208,57 +315,146 @@ entry, `ref' (the default) for a wrapped `sx:Ref' id-reference -- see
    ((and (consp v) (keywordp (car v)))
     (if (plist-get v :id)
         (shexc-shexr--ref-text (plist-get v :id))
-      (concat "[ " (shexc-shexr--serialize-body v) " ]")))
-   ((listp v) (shexc-shexr--serialize-rdf-list v string-mode))
+      (concat "[ " (shexc-shexr--flat-body v) " ]")))
+   ((listp v) (concat "(" (mapconcat (lambda (x) (shexc-shexr--flat-value x string-mode)) v " ") ")"))
    (t (error "shexc-shexr: cannot serialize value %S" v))))
 
-(defun shexc-shexr--serialize-rdf-list (items &optional string-mode)
-  (concat "(" (mapconcat (lambda (x) (shexc-shexr--serialize-value x string-mode)) items " ") ")"))
-
-(defun shexc-shexr--sort-keys (keys)
-  "KEYS in canonical order: alphabetical, with the \"big nested\"
-properties (`shexc-shexr--last-sorted-keys') sorted last."
-  (let ((last (seq-filter (lambda (k) (memq k shexc-shexr--last-sorted-keys)) keys))
-        (rest (seq-remove (lambda (k) (memq k shexc-shexr--last-sorted-keys)) keys)))
-    (append (sort rest (lambda (a b) (string< (symbol-name a) (symbol-name b)))) last)))
-
-(defun shexc-shexr--serialize-prop (type key value)
+(defun shexc-shexr--flat-prop (type key value)
   (concat "sx:" (substring (symbol-name key) 1) " "
           (if (eq key :extra)
               (mapconcat #'shexc-shexr--ref-text value ", ")
-            (shexc-shexr--serialize-value value (shexc-shexr--key-string-mode type key)))))
+            (shexc-shexr--flat-value value (shexc-shexr--key-string-mode type key)))))
 
-(defun shexc-shexr--serialize-body (node)
+(defun shexc-shexr--flat-body (node)
+  "Render NODE's `a sx:Type ; prop val ; ...' content on one line (no
+enclosing `[ ]'/trailing `.')."
+  (mapconcat #'identity
+             (cons (concat "a sx:" (plist-get node :type))
+                   (mapcar (lambda (k) (shexc-shexr--flat-prop (plist-get node :type) k (plist-get node k)))
+                           (shexc-shexr--node-keys node)))
+             " ; "))
+
+;; -- Pretty rendering: depth-aware.  A nested `[ ... ]'/`( ... )' pair is
+;; kept compact (the flat form above) if it fits within WIDTH columns at
+;; its actual starting column; otherwise it's broken, one child per
+;; line, indented two spaces deeper than the line it's nested in.
+;; INDENT is always the *enclosing line's* indentation depth (used to
+;; compute a broken pair's child indent), never the bracket's own
+;; column; COL is the actual column the pair starts at on the current
+;; line (used only for the fits-or-breaks decision).  WIDTH defaults to
+;; `shexc-shexr--fill-column' but is caller-overridable (e.g.
+;; shexc-ts-mode-convert.el passes the converting window's actual
+;; width), so it's threaded through every pretty-* call rather than read
+;; from the constant directly.
+
+(defun shexc-shexr--fits-p (col width text)
+  (<= (+ col (length text)) width))
+
+(defun shexc-shexr--pretty-ref (id indent col width)
+  "Depth-aware counterpart to `shexc-shexr--serialize-ref' -- that
+function only ever produces its flat (always-one-line) form, so a long
+ID (or a narrow WIDTH) needs this to break it into the same
+`[\\n  a sx:Ref ;\\n  sx:id <iri>\\n]' shape any other nested object
+would get."
+  (let ((flat (shexc-shexr--serialize-ref id)))
+    (if (shexc-shexr--fits-p col width flat)
+        flat
+      (let ((inner (+ indent 2)))
+        (concat "[\n" (make-string inner ?\s) "a sx:Ref ;\n"
+                (make-string inner ?\s) "sx:id " (shexc-shexr--ref-text id)
+                "\n" (make-string indent ?\s) "]")))))
+
+(defun shexc-shexr--pretty-value (v string-mode indent col width)
+  (cond
+   ((eq v t) "true")
+   ((numberp v) (number-to-string v))
+   ((stringp v) (pcase string-mode
+                  ('plain (shexc-shexr--turtle-string v))
+                  ('ref (shexc-shexr--pretty-ref v indent col width))
+                  (_ (shexc-shexr--ref-text v))))
+   ((shexc-shexr--literal-value-p v) (shexc-shexr--serialize-literal v))
+   ((and (consp v) (keywordp (car v)))
+    (if (plist-get v :id)
+        (shexc-shexr--ref-text (plist-get v :id))
+      (let ((flat (concat "[ " (shexc-shexr--flat-body v) " ]")))
+        (if (shexc-shexr--fits-p col width flat)
+            flat
+          (let ((inner (+ indent 2)))
+            (concat "[\n" (make-string inner ?\s)
+                    (shexc-shexr--pretty-body v inner width)
+                    "\n" (make-string indent ?\s) "]"))))))
+   ((listp v)
+    (let ((flat (shexc-shexr--flat-value v string-mode)))
+      (if (or (null v) (shexc-shexr--fits-p col width flat))
+          flat
+        (let ((inner (+ indent 2)))
+          (concat "(\n" (make-string inner ?\s)
+                  (mapconcat (lambda (x) (shexc-shexr--pretty-value x string-mode inner inner width))
+                             v (concat "\n" (make-string inner ?\s)))
+                  "\n" (make-string indent ?\s) ")")))))
+   (t (error "shexc-shexr: cannot serialize value %S" v))))
+
+(defun shexc-shexr--pretty-prop (type key value indent width)
+  (let ((label (concat "sx:" (substring (symbol-name key) 1) " ")))
+    (concat label
+            (if (eq key :extra)
+                (mapconcat #'shexc-shexr--ref-text value ", ")
+              (shexc-shexr--pretty-value value (shexc-shexr--key-string-mode type key)
+                                          indent (+ indent (length label)) width)))))
+
+(defun shexc-shexr--pretty-body (node indent width)
   "Render NODE's `a sx:Type ; prop val ; ...' content (no enclosing
-`[ ]'/trailing `.') -- shared between an inline `[ ... ]' and a top-level
-hoisted/root statement."
-  (let* ((type (plist-get node :type))
-         ;; `:context' is JSON-LD-adapter metadata (see shexc-shexj.el's
-         ;; @context handling), not real RDF content -- excluded here so
-         ;; the narrow parser never has to special-case it.
-         (keys (shexc-shexr--sort-keys
-                (remq :context (remq :type (remq :id (shexc-shexr--plist-keys node)))))))
+`[ ]'/trailing `.'), broken one property per line at depth INDENT --
+shared between a broken inline `[ ... ]' and a top-level hoisted/root
+statement (which is always broken, regardless of length, by the existing
+convention of one statement per blank-line-separated paragraph)."
+  (let ((type (plist-get node :type))
+        (pad (make-string indent ?\s)))
     (mapconcat
      #'identity
      (cons (concat "a sx:" type)
-           (mapcar (lambda (k) (shexc-shexr--serialize-prop type k (plist-get node k))) keys))
-     " ;\n  ")))
+           (mapcar (lambda (k) (shexc-shexr--pretty-prop type k (plist-get node k) indent width))
+                   (shexc-shexr--node-keys node)))
+     (concat " ;\n" pad))))
 
 ;; ---------------------------------------------------------------------
 ;; Entry point
 ;; ---------------------------------------------------------------------
 
 ;;;###autoload
-(defun shexc-shexr-serialize (schema)
+(defun shexc-shexr-serialize (schema &optional width prefixes base)
   "Serialize SCHEMA (a Schema value-tree, see shexc-shexj.el) to canonical
-ShExR Turtle text."
-  (let ((hoisted (shexc-shexr--all-hoisted schema)))
-    (concat
-     shexc-shexr--prefix-line
-     "[] " (shexc-shexr--serialize-body schema) " .\n"
-     (mapconcat
-      (lambda (n) (concat "\n" (shexc-shexr--ref-text (plist-get n :id)) " " (shexc-shexr--serialize-body n) " .\n"))
-      hoisted ""))))
+ShExR Turtle text.  WIDTH (default `shexc-shexr--fill-column') is the
+column a nested `[ ... ]'/`( ... )' pair must fit within (at its actual
+starting column) to stay on one line -- callers with a real display
+width to fit (e.g. the converting window) can pass it here instead.
+
+PREFIXES (an alist of (NAME . NAMESPACE-IRI)) and BASE (a namespace IRI
+string), when given, are typically the converting ShExC buffer's own
+PREFIX/BASE declarations (see shexc-ts-mode-convert.el) -- any IRI in
+the output that falls under one of them is shortened accordingly (see
+`shexc-shexr--make-shortener'), and only the entries that actually got
+used are emitted as a header (ShExC's own `PREFIX name: <ns>'/`BASE
+<ns>' syntax, no `@prefix'/trailing `.') right after the fixed
+`@prefix sx: <...> .' line."
+  (setq width (or width shexc-shexr--fill-column))
+  (let* ((shexc-shexr--shorten-fn (and (or prefixes base) (shexc-shexr--make-shortener prefixes base)))
+         (shexc-shexr--used-prefixes nil)
+         (shexc-shexr--used-base nil)
+         (hoisted (shexc-shexr--all-hoisted schema))
+         (body (concat
+                "[] " (shexc-shexr--pretty-body schema 2 width) " .\n"
+                (mapconcat
+                 (lambda (n) (concat "\n" (shexc-shexr--ref-text (plist-get n :id)) " "
+                                     (shexc-shexr--pretty-body n 2 width) " .\n"))
+                 hoisted "")))
+         (header
+          (concat
+           (mapconcat (lambda (entry) (format "PREFIX %s: <%s>\n" (car entry) (cdr entry)))
+                      (seq-filter (lambda (entry) (member (car entry) shexc-shexr--used-prefixes)) prefixes)
+                      "")
+           (if shexc-shexr--used-base (format "BASE <%s>\n" base) ""))))
+    (concat shexc-shexr--prefix-line header "\n" body)))
 
 ;; ---------------------------------------------------------------------
 ;; Narrow parser: the precise inverse of the serializer above, and
@@ -315,11 +511,48 @@ catch this and report (point) as the failing position."
     (shexc-shexr--fail "expected `%s'" literal))
   (goto-char (+ (point) (length literal))))
 
+(defconst shexc-shexr--pname-re
+  "\\([A-Za-z][A-Za-z0-9_-]*\\):\\([A-Za-z0-9_][A-Za-z0-9_.-]*\\)"
+  "A `name:local' PNAME_LN token -- deliberately as restricted as
+`shexc-shexr--safe-pn-local-p' (no `%XX'/backslash PN_LOCAL escapes):
+the serializer only ever shortens into this exact safe subset, so the
+parser only ever needs to recognize that subset back.")
+
+(defconst shexc-shexr--iri-or-bnode-start-re
+  (concat "<\\|_:\\|" shexc-shexr--pname-re)
+  "Matches at the start of anything `shexc-shexr--parse-iri-or-bnode'
+can parse -- used as a lookahead guard by callers (e.g.
+`shexc-shexr--parse-rdf-value') that must distinguish \"there's an IRI/
+bnode/prefixed-name here\" from \"there isn't, try something else\"
+without committing to a parse.")
+
+(defvar shexc-shexr--parse-prefixes nil
+  "Dynamically bound by `shexc-shexr-parse' to the alist of (NAME .
+NAMESPACE-IRI) pairs declared by the fence's own `PREFIX name: <ns>'
+header lines -- see `shexc-shexr--parse-header'.")
+
+(defvar shexc-shexr--parse-base nil
+  "Dynamically bound by `shexc-shexr-parse' to the fence's own `BASE
+<ns>' header line, or nil if it has none -- see
+`shexc-shexr--parse-header'.")
+
+(defun shexc-shexr--resolve-relative-iri (iri)
+  "IRI is a `<...>' IRIREF's raw text -- resolved against the fence's own
+in-scope `shexc-shexr--parse-base' if it's relative (lacks a
+`scheme:' prefix); an absolute IRI passes through unchanged.  Mirrors
+`shexc-shexr--make-shortener's BASE branch, which only ever produces a
+relative form that round-trips back to the original via this exact
+resolution."
+  (if (and shexc-shexr--parse-base (not (string-match-p "\\`[A-Za-z][A-Za-z0-9+.-]*:" iri)))
+      (url-expand-file-name iri shexc-shexr--parse-base)
+    iri))
+
 (defun shexc-shexr--parse-iri-or-bnode ()
   (shexc-shexr--skip-ws)
   (cond
    ((looking-at "<\\([^>]*\\)>")
-    (goto-char (match-end 0)) (match-string-no-properties 1))
+    (goto-char (match-end 0))
+    (shexc-shexr--resolve-relative-iri (match-string-no-properties 1)))
    ;; PN_CHARS-based BLANK_NODE_LABEL spans huge Unicode ranges (combining
    ;; marks, CJK, emoji, ...) -- rather than reproduce that whole grammar,
    ;; just exclude the handful of ASCII delimiters that can legitimately
@@ -330,7 +563,13 @@ catch this and report (point) as the failing position."
    ;; following statement-terminating `.').
    ((looking-at "_:\\([^][(); \t\n\r,]+\\)")
     (goto-char (match-end 0)) (concat "_:" (match-string-no-properties 1)))
-   (t (shexc-shexr--fail "expected an IRI or blank node label"))))
+   ((looking-at shexc-shexr--pname-re)
+    (goto-char (match-end 0))
+    (let* ((name (match-string-no-properties 1)) (local (match-string-no-properties 2))
+           (ns (cdr (assoc name shexc-shexr--parse-prefixes))))
+      (unless ns (shexc-shexr--fail "undeclared PREFIX `%s:'" name))
+      (concat ns local)))
+   (t (shexc-shexr--fail "expected an IRI, blank node label, or prefix:local"))))
 
 (defun shexc-shexr--unescape-turtle-string (raw)
   "Inverse of `shexc-shexr--turtle-string's escaping."
@@ -367,11 +606,31 @@ catch this and report (point) as the failing position."
   (goto-char (match-end 0))
   (match-string-no-properties 1))
 
-(defun shexc-shexr--parse-prefix-line ()
+(defun shexc-shexr--parse-header ()
+  "Parse the fixed `@prefix sx: <...> .' line, then any number of
+ShExC-syntax `PREFIX name: <ns>'/`BASE <ns>' lines (no `@prefix'/
+trailing `.', in any order) -- the inverse of `shexc-shexr-serialize's
+header.  Populates `shexc-shexr--parse-prefixes'/`-parse-base' as a
+side effect, consumed by every subsequent
+`shexc-shexr--parse-iri-or-bnode' call."
   (shexc-shexr--skip-ws)
   (unless (looking-at "@prefix[ \t]+sx:[ \t]+<http://www\\.w3\\.org/ns/shex#>[ \t]*\\.")
     (shexc-shexr--fail "expected `@prefix sx: <http://www.w3.org/ns/shex#> .'"))
-  (goto-char (match-end 0)))
+  (goto-char (match-end 0))
+  (let (prefixes base)
+    (catch 'done
+      (while t
+        (shexc-shexr--skip-ws)
+        (cond
+         ((looking-at "PREFIX[ \t]+\\([A-Za-z][A-Za-z0-9_-]*\\):[ \t]*<\\([^>]*\\)>")
+          (goto-char (match-end 0))
+          (push (cons (match-string-no-properties 1) (match-string-no-properties 2)) prefixes))
+         ((looking-at "BASE[ \t]+<\\([^>]*\\)>")
+          (goto-char (match-end 0))
+          (setq base (match-string-no-properties 1)))
+         (t (throw 'done nil)))))
+    (setq shexc-shexr--parse-prefixes (nreverse prefixes)
+          shexc-shexr--parse-base base)))
 
 (defun shexc-shexr--parse-typed-literal ()
   "A quoted string, optionally suffixed by `^^<iri>' or `@lang' -- a
@@ -399,7 +658,7 @@ value-set literal entry, returned as a `:value'/`:type'/`:language' plist."
    ;; a bare IRI/blank-node value-set entry is a plain string -- never a
    ;; reference to a hoisted same-document object (value-set entries are
    ;; never `:id'-bearing), so resolved immediately, not deferred.
-   ((looking-at "<\\|_:") (shexc-shexr--parse-iri-or-bnode))
+   ((looking-at shexc-shexr--iri-or-bnode-start-re) (shexc-shexr--parse-iri-or-bnode))
    (t (shexc-shexr--fail "expected a value-set entry"))))
 
 (defun shexc-shexr--parse-rdf-value (&optional mode)
@@ -421,7 +680,7 @@ syntactically be a quoted string uses `plain' or `value' mode; see
    ((looking-at "false\\_>") (goto-char (match-end 0)) nil)
    ((looking-at "-?[0-9]") (shexc-shexr--parse-number-token))
    ((eq mode 'plain) (shexc-shexr--parse-plain-string))
-   ((looking-at "<\\|_:") (shexc-shexr--make-ref (shexc-shexr--parse-iri-or-bnode)))
+   ((looking-at shexc-shexr--iri-or-bnode-start-re) (shexc-shexr--make-ref (shexc-shexr--parse-iri-or-bnode)))
    (t (shexc-shexr--fail "expected a value"))))
 
 (defun shexc-shexr--parse-rdf-list (mode)
@@ -515,8 +774,8 @@ malformed or non-canonical input."
   (with-temp-buffer
     (insert text)
     (goto-char (point-min))
-    (shexc-shexr--parse-prefix-line)
-    (let (root hoist-table)
+    (let (shexc-shexr--parse-prefixes shexc-shexr--parse-base root hoist-table)
+      (shexc-shexr--parse-header)
       (shexc-shexr--skip-ws)
       (while (not (eobp))
         (let* ((subj (shexc-shexr--parse-subject))

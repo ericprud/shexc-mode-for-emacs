@@ -197,6 +197,33 @@ or re-derive every interior line's indentation as if it were ShExC
 code continuing a multi-line comment, destroying that nesting."
   (save-excursion (goto-char beg) (indent-according-to-mode)))
 
+(defun shexc-ts-mode-convert--ctx-prefixes-alist (ctx)
+  "CTX's prefix table (a hash table, see shexc-shexj.el's `ctx' struct)
+as a plain (NAME . NAMESPACE-IRI) alist -- `shexc-shexr-serialize'
+takes plain data, not shexc-shexj's `ctx' struct, per shexc-shexr.el's
+existing boundary (see its \"Plist utilities\" commentary).  CTX's own
+keys include the trailing `:' (e.g. \"ex:\", per
+`shexc-shexj--apply-prefix'/`--compile-pname-ln's PNAME_NS token
+convention) -- stripped here since `shexc-shexr-serialize' expects a
+bare name and supplies its own `:' wherever one is needed."
+  (let (acc)
+    (maphash (lambda (name ns) (push (cons (substring name 0 -1) ns) acc))
+              (shexc-shexj--ctx-prefixes ctx))
+    acc))
+
+(defun shexc-ts-mode-convert--shexr-serialize (tree)
+  "Like `shexc-shexr-serialize', but fitting nested `[ ... ]'/`( ... )'
+pairs to the converting window's actual text width rather than the
+library's fixed 80-column default (a fence this wide is going to be
+read in this window, so that's the width that matters), and inheriting
+the buffer's own PREFIX/BASE declarations so the fence can use them
+too -- only the ones it actually ends up using get a header line (see
+`shexc-shexr-serialize')."
+  (let ((ctx (shexc-shexj-buffer-directive-ctx)))
+    (shexc-shexr-serialize tree (window-body-width)
+                            (shexc-ts-mode-convert--ctx-prefixes-alist ctx)
+                            (shexc-shexj--ctx-base ctx))))
+
 (defun shexc-ts-mode-convert--do (renderer kind)
   (pcase-let ((`(,beg ,end ,tree) (shexc-ts-mode-convert--target)))
     (let* ((text (funcall renderer tree))
@@ -221,7 +248,7 @@ what \"the shape/schema at point\" means."
   "Convert the shape/schema at point (or active region) to ShExR
 \(canonical Turtle\), in place, fenced as a `/* ... */' block comment."
   (interactive)
-  (shexc-ts-mode-convert--do #'shexc-shexr-serialize "SHEXR"))
+  (shexc-ts-mode-convert--do #'shexc-ts-mode-convert--shexr-serialize "SHEXR"))
 
 ;; ---------------------------------------------------------------------
 ;; Fence-to-ShExC
@@ -348,7 +375,7 @@ back to ShExC, closing the loop."
     (cond
      ((not fence) (shexc-ts-mode-convert-to-shexj))
      ((string= (car fence) "SHEXJ")
-      (shexc-ts-mode-convert--fence-to-other-fence fence "SHEXR" #'shexc-shexr-serialize))
+      (shexc-ts-mode-convert--fence-to-other-fence fence "SHEXR" #'shexc-ts-mode-convert--shexr-serialize))
      (t (shexc-ts-mode-convert-fence-to-shexc)))))
 
 ;;;###autoload
