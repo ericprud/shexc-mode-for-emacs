@@ -34,12 +34,14 @@
 ;;
 ;; Commands: `shexc-ts-mode-convert-to-shexj', `-to-shexr',
 ;; `-fence-to-shexc' (auto-detects direction from the sentinel), and
-;; `-at-point' (bound to `C-c C-v'): inside a fence, converts it back to
-;; ShExC; otherwise prompts for a target format and converts the shape/
-;; schema at point (or active region) to it.  Also registers an
-;; additional flymake backend (via `shexc-ts-mode-hook', so this file
-;; never has to modify shexc-ts-mode.el itself) that flags a fence whose
-;; content doesn't parse, or whose BEGIN/END markers don't match.
+;; `-at-point' (bound to `C-c C-v'), which cycles the shape/schema at
+;; point (or active region) through ShExC -> ShExJ -> ShExR -> ShExC --
+;; outside any fence it converts to ShExJ; inside a ShExJ fence, onward
+;; to ShExR; inside a ShExR fence, back to ShExC, closing the loop.
+;; Also registers an additional flymake backend (via `shexc-ts-mode-hook',
+;; so this file never has to modify shexc-ts-mode.el itself) that flags a
+;; fence whose content doesn't parse, or whose BEGIN/END markers don't
+;; match.
 
 ;;; Code:
 
@@ -193,6 +195,22 @@ runs and the buffer is left untouched."
         ("SHEXR" (shexc-shexr-parse content)))
     (error (user-error "shexc-ts-mode: cannot parse fenced %s: %s" kind (error-message-string err)))))
 
+(defun shexc-ts-mode-convert--fence-tree (fence)
+  "Parse FENCE's (as returned by `shexc-ts-mode-convert--fence-at') content
+into a value-tree."
+  (pcase-let ((`(,kind ,_id ,_beg ,_end ,content-beg ,content-end) fence))
+    (shexc-ts-mode-convert--parse-fence-content
+     kind (shexc-ts-mode-convert--strip-fence-prefixes content-beg content-end))))
+
+(defun shexc-ts-mode-convert--replace-fence (fence new-text)
+  "Replace the whole of FENCE (BEGIN line through END line inclusive)
+with NEW-TEXT, re-indented."
+  (pcase-let ((`(,_kind ,_id ,beg ,end ,_content-beg ,_content-end) fence))
+    (delete-region beg end)
+    (goto-char beg)
+    (insert new-text)
+    (indent-region beg (point))))
+
 ;;;###autoload
 (defun shexc-ts-mode-convert-fence-to-shexc ()
   "Convert the ShExJ/ShExR fence at point back to ShExC text, replacing
@@ -201,14 +219,16 @@ the whole fence (BEGIN line through END line inclusive)."
   (let ((fence (shexc-ts-mode-convert--fence-at (point))))
     (unless fence
       (user-error "No shexc-ts-mode ShExJ/ShExR fence here"))
-    (pcase-let ((`(,kind ,_id ,beg ,end ,content-beg ,content-end) fence))
-      (let* ((content (shexc-ts-mode-convert--strip-fence-prefixes content-beg content-end))
-             (tree (shexc-ts-mode-convert--parse-fence-content kind content))
-             (decompiled (shexc-shexj-decompile tree)))
-        (delete-region beg end)
-        (goto-char beg)
-        (insert decompiled)
-        (indent-region beg (point))))))
+    (shexc-ts-mode-convert--replace-fence
+     fence (shexc-shexj-decompile (shexc-ts-mode-convert--fence-tree fence)))))
+
+(defun shexc-ts-mode-convert--fence-to-other-fence (fence target-kind renderer)
+  "Replace FENCE with a new fence of TARGET-KIND (\"SHEXJ\"/\"SHEXR\"),
+rendering FENCE's parsed value-tree via RENDERER."
+  (let* ((tree (shexc-ts-mode-convert--fence-tree fence))
+         (text (funcall renderer tree))
+         (id (cl-incf shexc-ts-mode-convert--next-id)))
+    (shexc-ts-mode-convert--replace-fence fence (shexc-ts-mode-convert--fence-text target-kind id text))))
 
 ;; ---------------------------------------------------------------------
 ;; Dispatcher and menu
@@ -216,16 +236,17 @@ the whole fence (BEGIN line through END line inclusive)."
 
 ;;;###autoload
 (defun shexc-ts-mode-convert-at-point ()
-  "Inside a ShExJ/ShExR fence, convert it back to ShExC; otherwise prompt
-for a target format and convert the shape/schema at point (or active
-region) to it."
+  "Cycle the shape/schema at point (or active region) through ShExC ->
+ShExJ -> ShExR -> ShExC: outside any fence, convert to ShExJ; inside a
+ShExJ fence, convert onward to ShExR; inside a ShExR fence, convert
+back to ShExC, closing the loop."
   (interactive)
-  (if (shexc-ts-mode-convert--fence-at (point))
-      (shexc-ts-mode-convert-fence-to-shexc)
-    (let ((fmt (completing-read "Convert to: " '("shexj" "shexr") nil t)))
-      (if (string= fmt "shexj")
-          (shexc-ts-mode-convert-to-shexj)
-        (shexc-ts-mode-convert-to-shexr)))))
+  (let ((fence (shexc-ts-mode-convert--fence-at (point))))
+    (cond
+     ((not fence) (shexc-ts-mode-convert-to-shexj))
+     ((string= (car fence) "SHEXJ")
+      (shexc-ts-mode-convert--fence-to-other-fence fence "SHEXR" #'shexc-shexr-serialize))
+     (t (shexc-ts-mode-convert-fence-to-shexc)))))
 
 ;;;###autoload
 (define-key shexc-ts-mode-map (kbd "C-c C-v") #'shexc-ts-mode-convert-at-point)
@@ -240,7 +261,7 @@ region) to it."
      ("v" shexc-ts-mode-convert-at-point
       :description
       (lambda () (shexc-ts-mode--menu-desc
-                  "Convert to ShExJ/ShExR, or fence back to ShExC"
+                  "Cycle ShExC -> ShExJ -> ShExR -> ShExC"
                   'shexc-ts-mode-convert-at-point)))
      ("j" shexc-ts-mode-convert-to-shexj
       :description
