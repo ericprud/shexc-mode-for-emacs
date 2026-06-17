@@ -836,10 +836,11 @@ right before that child node is reached -- used by
 `shexc-shexj-compile-node' to build correct prefix/base context for a
 single target declaration without compiling the rest of the schema."
   (let (acc)
-    (dolist (c (shexc-shexj--named-children root))
-      (if (and stop-before (treesit-node-eq c stop-before))
-          (cl-return)
-        (setq acc (shexc-shexj--apply-directive-or-collect ctx c acc))))
+    (catch 'stop
+      (dolist (c (shexc-shexj--named-children root))
+        (if (and stop-before (treesit-node-eq c stop-before))
+            (throw 'stop nil)
+          (setq acc (shexc-shexj--apply-directive-or-collect ctx c acc)))))
     (append (list :context shexc-shexj--context-iri :type "Schema")
             (when (plist-get acc :imports) (list :imports (nreverse (plist-get acc :imports))))
             (when (plist-get acc :startActs) (list :startActs (plist-get acc :startActs)))
