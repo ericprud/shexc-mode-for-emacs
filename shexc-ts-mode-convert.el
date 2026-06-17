@@ -145,7 +145,7 @@ unescaped (see `shexc-ts-mode-convert--unescape-content')."
 contiguous prefix before any shape declaration -- never interspersed --
 so a single scan suffices.  Used so a whole-buffer conversion leaves
 the BASE/PREFIX preamble itself in place rather than swallowing it into
-the fence, where `shexc-ts-mode-convert--directive-ctx' could no longer
+the fence, where `shexc-shexj-buffer-directive-ctx' could no longer
 find it to shorten IRIs when converting back."
   (let ((end (point-min)))
     (catch 'done
@@ -273,21 +273,6 @@ only indents the opening line -- see
 ;; Reusing the buffer's own PREFIX/BASE declarations when decompiling
 ;; ---------------------------------------------------------------------
 
-(defun shexc-ts-mode-convert--directive-ctx ()
-  "A `shexc-shexj--ctx' reflecting every BASE/PREFIX declaration in the
-current buffer's `shex_doc', applied in document order exactly as the
-compiler would -- i.e. the BASE/PREFIX table active by the *end* of the
-buffer.  Reuses the compiler's own directive-application code (rather
-than re-deriving the same escaping/resolution rules here) since
-base/prefix decls can only ever appear as direct top-level children of
-the root."
-  (let ((ctx (shexc-shexj--make-ctx)))
-    (dolist (c (treesit-node-children (treesit-buffer-root-node) t))
-      (pcase (treesit-node-type c)
-        ("base_decl" (shexc-shexj--apply-base ctx c))
-        ("prefix_decl" (shexc-shexj--apply-prefix ctx c))))
-    ctx))
-
 (defun shexc-ts-mode-convert--safe-pn-local-p (s)
   "Whether S can be emitted as a PN_LOCAL with no `%XX'/backslash
 escaping -- deliberately conservative (e.g. rejects a trailing `.',
@@ -334,7 +319,7 @@ ever *added* to the buffer's own declarations."
   (let ((fence (shexc-ts-mode-convert--fence-at (point))))
     (unless fence
       (user-error "No shexc-ts-mode ShExJ/ShExR fence here"))
-    (let* ((ctx (shexc-ts-mode-convert--directive-ctx))
+    (let* ((ctx (shexc-shexj-buffer-directive-ctx))
            (shexc-shexj-decompile-iri-shortener
             (lambda (iri) (shexc-ts-mode-convert--shorten-iri ctx iri))))
       (shexc-ts-mode-convert--replace-fence

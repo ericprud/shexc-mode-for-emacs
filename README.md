@@ -598,7 +598,11 @@ turns on `flymake-mode` automatically, reporting these diagnostics:
 
 - **Errors** — a shape reference (`@<#Typo>`, `EXTENDS @<#Typo>`,
   `&<#Typo>`, `start = @<#Typo>`) whose label has no matching
-  `shape_expr_decl` in the buffer.
+  `shape_expr_decl` in the buffer. Labels are compared by fully resolved
+  IRI (through whatever `BASE`/`PREFIX` is in scope), not raw source
+  text, so e.g. `<http://a.example/TLabor>` declared with a
+  `BASE <http://a.example/>` in scope is correctly recognized as the
+  same shape as a `@<TLabor>` reference elsewhere.
 - **Errors** — a prefixed name (`x:p2`, a value-set IRI, a datatype, ...)
   whose prefix has no matching `PREFIX x: <...>` declaration. If the prefix
   is in the active [prefix map](#prefix-maps-and-shexc-ts-mode-insert-prefix-c-c-c-p),

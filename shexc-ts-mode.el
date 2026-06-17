@@ -45,6 +45,12 @@
 (require 'pcase)
 (require 'hideshow)
 (require 'flymake)
+;; For `shexc-shexj-buffer-directive-ctx'/`-resolve-label', used by
+;; `shexc-ts-mode--flymake-undefined-shapes' to compare shape references
+;; by resolved IRI rather than raw source text.  Safe as an eager,
+;; top-level `require' (no circularity): unlike `shexc-ts-mode-convert.el',
+;; `shexc-shexj.el' has no dependency of its own on `shexc-ts-mode'.
+(require 'shexc-shexj)
 (require 'transient)
 
 (declare-function treesit-parser-create "treesit.c")
@@ -2042,21 +2048,30 @@ followed by an unexpected token\)."
 (defun shexc-ts-mode--flymake-undefined-shapes ()
   "Return `:error' diagnostics for undefined shape references.
 I.e. shape references with no matching `shape_expr_decl', e.g.
-`@<#Typo>' or `EXTENDS @<#Typo>'."
-  (let ((decl-labels
-         (mapcar (lambda (n) (treesit-node-text n t))
-                 (shexc-ts-mode--query-labels
-                  '((shape_expr_decl label: (shape_expr_label) @label))))))
+`@<#Typo>' or `EXTENDS @<#Typo>'.
+
+Compares labels by their fully resolved IRI (via
+`shexc-shexj-resolve-label', against a BASE/PREFIX context built once
+for the whole buffer), not by raw source text -- so e.g. a shape
+declared `<http://a.example/TLabor>' and referenced `@<TLabor>' with a
+matching `BASE <http://a.example/>' in scope are correctly recognized
+as the same shape, never flagged as undefined just because one
+occurrence happened to be written more/less abbreviated than the
+other."
+  (let* ((ctx (shexc-shexj-buffer-directive-ctx))
+         (decl-labels
+          (mapcar (lambda (n) (shexc-shexj-resolve-label ctx n))
+                  (shexc-ts-mode--query-labels
+                   '((shape_expr_decl label: (shape_expr_label) @label))))))
     (delq nil
           (mapcar
            (lambda (ref)
-             (let ((text (treesit-node-text ref t)))
-               (unless (member text decl-labels)
-                 (flymake-make-diagnostic
-                  (current-buffer)
-                  (treesit-node-start ref) (treesit-node-end ref)
-                  :error
-                  (format "Undefined shape %s" text)))))
+             (unless (member (shexc-shexj-resolve-label ctx ref) decl-labels)
+               (flymake-make-diagnostic
+                (current-buffer)
+                (treesit-node-start ref) (treesit-node-end ref)
+                :error
+                (format "Undefined shape %s" (treesit-node-text ref t)))))
            (shexc-ts-mode--query-labels
             '((shape_ref label: (shape_expr_label) @label)))))))
 

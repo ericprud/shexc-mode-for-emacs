@@ -873,6 +873,32 @@ context active at NODE's position."
     (list :context shexc-shexj--context-iri :type "Schema"
           :shapes (list (shexc-shexj--compile-shape-expr-decl ctx node)))))
 
+;;;###autoload
+(defun shexc-shexj-buffer-directive-ctx ()
+  "A `shexc-shexj--ctx' reflecting every BASE/PREFIX declaration in the
+current buffer's `shex_doc', applied in document order exactly as
+`shexc-shexj-compile-buffer' would -- i.e. the BASE/PREFIX table active
+by the *end* of the buffer.  For callers that need to resolve a label/
+IRI the same way the compiler would (e.g. to compare two shape
+references for semantic, not just lexical, equality) without
+compiling the whole buffer."
+  (let ((ctx (shexc-shexj--make-ctx)))
+    (dolist (c (treesit-node-children (treesit-buffer-root-node) t))
+      (pcase (treesit-node-type c)
+        ("base_decl" (shexc-shexj--apply-base ctx c))
+        ("prefix_decl" (shexc-shexj--apply-prefix ctx c))))
+    ctx))
+
+(defun shexc-shexj-resolve-label (ctx node)
+  "Resolve label NODE (a `shape_expr_label'/`triple_expr_label', or any
+node `shexc-shexj--iri-node-text' accepts) to an absolute IRI string (or,
+for a blank node, its `_:label' text unchanged) via CTX, falling back to
+NODE's raw source text if it can't be resolved (e.g. an undefined
+prefix -- a separate concern from whatever's calling this)."
+  (condition-case nil
+      (shexc-shexj--iri-node-text ctx node)
+    (error (treesit-node-text node t))))
+
 ;; ---------------------------------------------------------------------
 ;; Decompiler: value-tree -> ShExC text.  Far simpler than the compiler
 ;; -- no ambiguity to resolve, just a `:type'-dispatched structural walk.
