@@ -41,10 +41,9 @@ reachable, extended reachable) is switched on in turn](example/demo/highlight.gi
   references and (as an orientation aid) repeated predicates within one
   group
 - live highlighting of the shapes reachable from the shape at point — via a
-  sole reference, AND, OR, NOT, or EXTENDS (`C-c C-l` turns it off
-  unconditionally; see [Extended-shape
-  highlighting](#extended-shape-highlighting) for the terminology and how to
-  turn it on)
+  sole reference, AND, OR, NOT, or EXTENDS (`C-c C-l` toggles it on/off; see
+  [Extended-shape highlighting](#extended-shape-highlighting) for the
+  terminology)
 - in-place conversion of the shape/schema at point to ShExJ or ShExR and
   back (`C-c C-v`; see [ShExC/ShExJ/ShExR conversion](#shexcshexjshexr-conversion)
   below)
@@ -67,7 +66,7 @@ description.
 | `C-c C-r`           | `shexc-ts-mode-rename-shape`              | Rename a shape label everywhere it's used |
 | `C-c C-p`           | `shexc-ts-mode-insert-prefix`             | Insert a `PREFIX` decl for the prefix at point |
 | `C-c C-f`           | `shexc-ts-mode-toggle-fold`               | Fold/unfold the `{ ... }` body at point |
-| `C-c C-l`           | `shexc-ts-mode-clear-highlighting`        | Turn off all highlighting unconditionally |
+| `C-c C-l`           | `shexc-ts-mode-highlight-reachable-mode`  | Toggle reachable-shape highlighting on/off |
 | `C-c C-v`           | `shexc-ts-mode-convert-at-point`          | Cycle the shape/schema at point ShExC → ShExJ → ShExR → ShExC |
 | `C-c C-c`           | `shexc-ts-mode-menu`                      | Open the `transient` feature menu |
 | `C-M-a` / `C-M-e`   | `beginning/end-of-defun`                  | Previous/next shape declaration |
@@ -403,14 +402,10 @@ EXTENDS clause → shape declaration, etc. (With `expreg`, `C-+` /
 
 ### Extended-shape highlighting
 
-#### `shexc-ts-mode-highlight-reachable-mode`
+#### `shexc-ts-mode-highlight-reachable-mode` (`C-c C-l`)
 
 Toggle live highlighting of every shape reachable from the `shape_expr_decl`
-containing point (no default keybinding -- use `M-x` or the feature menu's
-`l`; `C-c C-l`/`shexc-ts-mode-clear-highlighting` only ever turns
-highlighting *off*, unconditionally, regardless of whether this mode
-currently thinks it's on -- see below). Terminology used here (and in the
-source):
+containing point. Terminology used here (and in the source):
 
 - **`shapeLabel` / `predicate`** — the ShapeDecl label, and the predicates of
   its shapeExpression, of the *focal* shape (the one containing point).
@@ -540,16 +535,12 @@ excluded entirely (and dropped from
 `shexc-ts-mode-highlight-reachable-shapes`'s return value).
 
 These five selections persist independently of
-`shexc-ts-mode-highlight-reachable-mode` itself: toggling the mode on and
-off (via `M-x` or the feature menu's `l`) doesn't change them, so turning
-highlighting off and back on restores the same selection of shapes/
-predicates. `C-c C-l` (`shexc-ts-mode-clear-highlighting`, also bound to
-`L` in the feature menu) is a one-way "turn it off" rather than a toggle --
-the thing to press when something is highlighted and you just want it
-gone, without having to know (or guess) whether the mode currently thinks
-it's on; it also sweeps the buffer for any overlay the mode itself might
-have left behind, so it's the reliable way to clear highlighting that
-otherwise seems "stuck".
+`shexc-ts-mode-highlight-reachable-mode` itself: `C-c C-l` toggles the mode
+on and off without changing them, so turning highlighting off and back on
+restores the same selection of shapes/predicates. Turning it off also
+sweeps the buffer for any overlay the mode itself might have left behind
+(not just the ones in its own tracked list), so it's reliable even if
+something else ever desynced that list.
 
 #### Programmatic API
 

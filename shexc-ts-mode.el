@@ -1536,19 +1536,6 @@ used independently or together."
     (setq shexc-ts-mode--highlight-reachable-last-decl-start nil)
     (shexc-ts-mode-clear-reachable-overlays)))
 
-;;;###autoload
-(defun shexc-ts-mode-clear-highlighting ()
-  "Unconditionally turn off all `shexc-ts-mode' highlighting and remove
-every overlay it placed, regardless of `shexc-ts-mode-highlight-reachable-mode's
-current on/off state -- a one-way \"turn it off\" rather than a toggle,
-so it's always the right thing to press when something is highlighted
-and you want it not to be, instead of having to first check (or guess)
-whether the mode happens to think it's already on."
-  (interactive)
-  (when shexc-ts-mode-highlight-reachable-mode
-    (shexc-ts-mode-highlight-reachable-mode -1))
-  (shexc-ts-mode-clear-reachable-overlays))
-
 (defun shexc-ts-mode--refresh-highlight-reachable ()
   "Recompute the `shexc-ts-mode-highlight-reachable-mode' overlays at point.
 Does nothing if that mode is not currently enabled."
@@ -2142,16 +2129,12 @@ For use as a `transient' suffix description."
 (transient-define-prefix shexc-ts-mode-menu ()
   "Feature menu for `shexc-ts-mode', showing live keybindings."
   [["Navigate"
-    ("l" shexc-ts-mode-highlight-reachable-mode
-     :description
+    (:info
      (lambda ()
-       (format "Highlight-reachable-mode is %s"
-               (if shexc-ts-mode-highlight-reachable-mode "ON" "off"))))
-    ("L" shexc-ts-mode-clear-highlighting
-     :description
-     (lambda () (shexc-ts-mode--menu-desc
-                 "Turn off all highlighting unconditionally"
-                 'shexc-ts-mode-clear-highlighting)))
+       (shexc-ts-mode--menu-desc
+        (format "Toggle highlighting on/off [%s]"
+                (if shexc-ts-mode-highlight-reachable-mode "ON" "off"))
+        'shexc-ts-mode-highlight-reachable-mode)))
     ("h" shexc-ts-mode-toggle-highlight-reachable-current
      :description
      (lambda ()
@@ -2271,7 +2254,7 @@ run M-x shexc-ts-mode-install-grammar")))
   (define-key shexc-ts-mode-map (kbd "C-c C-p") #'shexc-ts-mode-insert-prefix)
 
   ;; live "germane shapes" highlighting, following point
-  (define-key shexc-ts-mode-map (kbd "C-c C-l") #'shexc-ts-mode-clear-highlighting)
+  (define-key shexc-ts-mode-map (kbd "C-c C-l") #'shexc-ts-mode-highlight-reachable-mode)
 
   ;; folding `{ ... }' shape bodies
   (define-key shexc-ts-mode-map (kbd "C-c C-f") #'shexc-ts-mode-toggle-fold)
