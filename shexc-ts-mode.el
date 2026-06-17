@@ -1055,10 +1055,18 @@ See `shexc-ts-mode--effective-classification' and
   "Overlays placed by `shexc-ts-mode-highlight-reachable-shapes'.")
 
 (defun shexc-ts-mode-clear-reachable-overlays ()
-  "Remove all overlays added by `shexc-ts-mode-highlight-reachable-shapes'."
+  "Remove all overlays added by `shexc-ts-mode-highlight-reachable-shapes'.
+Besides deleting everything in `shexc-ts-mode--reachable-overlays'
+\(the normal, fast path\), also sweeps the whole buffer for any leftover
+overlay carrying the `shexc-ts-mode-highlight-reachable' property --
+defense in depth against that list ever getting out of sync with
+reality \(e.g. a caller other than `shexc-ts-mode-highlight-reachable-shapes'
+itself adding overlays, or a future bug\), which would otherwise leave
+highlighting visible with no way left to remove it."
   (interactive)
   (mapc #'delete-overlay shexc-ts-mode--reachable-overlays)
-  (setq shexc-ts-mode--reachable-overlays nil))
+  (setq shexc-ts-mode--reachable-overlays nil)
+  (remove-overlays (point-min) (point-max) 'shexc-ts-mode-highlight-reachable t))
 
 (defun shexc-ts-mode--decl-at (pos)
   "Return the `shape_expr_decl' node containing POS, or nil if none.
@@ -1337,6 +1345,7 @@ shape, or a `reachable-predicate' otherwise."
       (let ((ov (make-overlay (treesit-node-start pred-node)
                               (treesit-node-end pred-node))))
         (overlay-put ov 'face (shexc-ts-mode--pick-predicate-face strength extended reachable))
+        (overlay-put ov 'shexc-ts-mode-highlight-reachable t)
         (push ov shexc-ts-mode--reachable-overlays)
         (push ov overlays)))
     overlays))
@@ -1403,6 +1412,7 @@ they were first discovered (breadth-first)."
                                     (treesit-node-end label-node))))
               (overlay-put ov 'face (shexc-ts-mode--pick-label-face
                                      shexc-ts-mode--strength-required nil nil))
+              (overlay-put ov 'shexc-ts-mode-highlight-reachable t)
               (push ov shexc-ts-mode--reachable-overlays)))
           ;; seed `best' so a cycle back to the focal shape doesn't
           ;; place a second, possibly different-faced overlay on its
@@ -1453,6 +1463,7 @@ they were first discovered (breadth-first)."
                                                (treesit-node-end label-node)))
                         (overlay-put ov 'face (shexc-ts-mode--pick-label-face
                                                ref-strength eff-extended eff-reachable))
+                        (overlay-put ov 'shexc-ts-mode-highlight-reachable t)
                         (push ov shexc-ts-mode--reachable-overlays)
                         (puthash label-text ov label-overlays))))
                   (when shexc-ts-mode-highlight-reachable-include-predicates
@@ -1518,6 +1529,19 @@ used independently or together."
     (remove-hook 'post-command-hook #'shexc-ts-mode--highlight-reachable-update t)
     (setq shexc-ts-mode--highlight-reachable-last-decl-start nil)
     (shexc-ts-mode-clear-reachable-overlays)))
+
+;;;###autoload
+(defun shexc-ts-mode-clear-highlighting ()
+  "Unconditionally turn off all `shexc-ts-mode' highlighting and remove
+every overlay it placed, regardless of `shexc-ts-mode-highlight-reachable-mode's
+current on/off state -- a one-way \"turn it off\" rather than a toggle,
+so it's always the right thing to press when something is highlighted
+and you want it not to be, instead of having to first check (or guess)
+whether the mode happens to think it's already on."
+  (interactive)
+  (when shexc-ts-mode-highlight-reachable-mode
+    (shexc-ts-mode-highlight-reachable-mode -1))
+  (shexc-ts-mode-clear-reachable-overlays))
 
 (defun shexc-ts-mode--refresh-highlight-reachable ()
   "Recompute the `shexc-ts-mode-highlight-reachable-mode' overlays at point.
@@ -2103,7 +2127,16 @@ For use as a `transient' suffix description."
 (transient-define-prefix shexc-ts-mode-menu ()
   "Feature menu for `shexc-ts-mode', showing live keybindings."
   [["Navigate"
-    (:info "C-c C-l          Toggle highlight-reachable-mode on/off")
+    ("l" shexc-ts-mode-highlight-reachable-mode
+     :description
+     (lambda ()
+       (format "Highlight-reachable-mode is %s"
+               (if shexc-ts-mode-highlight-reachable-mode "ON" "off"))))
+    ("L" shexc-ts-mode-clear-highlighting
+     :description
+     (lambda () (shexc-ts-mode--menu-desc
+                 "Turn off all highlighting unconditionally"
+                 'shexc-ts-mode-clear-highlighting)))
     ("h" shexc-ts-mode-toggle-highlight-reachable-current
      :description
      (lambda ()
@@ -2223,7 +2256,7 @@ run M-x shexc-ts-mode-install-grammar")))
   (define-key shexc-ts-mode-map (kbd "C-c C-p") #'shexc-ts-mode-insert-prefix)
 
   ;; live "germane shapes" highlighting, following point
-  (define-key shexc-ts-mode-map (kbd "C-c C-l") #'shexc-ts-mode-highlight-reachable-mode)
+  (define-key shexc-ts-mode-map (kbd "C-c C-l") #'shexc-ts-mode-clear-highlighting)
 
   ;; folding `{ ... }' shape bodies
   (define-key shexc-ts-mode-map (kbd "C-c C-f") #'shexc-ts-mode-toggle-fold)
