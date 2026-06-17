@@ -2267,6 +2267,17 @@ run M-x shexc-ts-mode-install-grammar")))
   (add-hook 'flymake-diagnostic-functions #'shexc-ts-mode-flymake nil t)
   (flymake-mode 1)
 
+  ;; Optional companion feature (in-place ShExC <-> ShExJ/ShExR
+  ;; conversion, `C-c C-v'): pulled in here, lazily, on first use of the
+  ;; mode -- not via a top-level `require' above, since
+  ;; shexc-ts-mode-convert.el itself `require's `shexc-ts-mode', which
+  ;; would be a circular `require' if attempted while this file is still
+  ;; being loaded.  By the time a buffer actually turns on `shexc-ts-mode',
+  ;; this file has already finished loading and called `provide', so the
+  ;; require below is safe; NOERROR so the base mode still works for
+  ;; anyone who only fetched shexc-ts-mode.el.
+  (require 'shexc-ts-mode-convert nil t)
+
   (treesit-major-mode-setup))
 
 ;; Prefer the tree-sitter mode for .shex(c) files when its grammar is

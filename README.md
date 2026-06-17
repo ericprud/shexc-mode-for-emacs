@@ -43,6 +43,9 @@ reachable, extended reachable) is switched on in turn](example/demo/highlight.gi
 - live highlighting of the shapes reachable from the shape at point — via a
   sole reference, AND, OR, NOT, or EXTENDS (`C-c C-h`; see [Extended-shape
   highlighting](#extended-shape-highlighting) for the terminology)
+- in-place conversion of the shape/schema at point to ShExJ or ShExR and
+  back (`C-c C-v`; see [ShExC/ShExJ/ShExR conversion](#shexcshexjshexr-conversion)
+  below)
 - a `transient` feature menu summarizing all of the above with live
   keybindings (`C-c C-c`)
 
@@ -63,6 +66,7 @@ description.
 | `C-c C-p`           | `shexc-ts-mode-insert-prefix`             | Insert a `PREFIX` decl for the prefix at point |
 | `C-c C-f`           | `shexc-ts-mode-toggle-fold`               | Fold/unfold the `{ ... }` body at point |
 | `C-c C-h`           | `shexc-ts-mode-highlight-reachable-mode`    | Live-highlight shapes germane to point |
+| `C-c C-v`           | `shexc-ts-mode-convert-at-point`          | Cycle the shape/schema at point ShExC → ShExJ → ShExR → ShExC |
 | `C-c C-c`           | `shexc-ts-mode-menu`                      | Open the `transient` feature menu |
 | `C-M-a` / `C-M-e`   | `beginning/end-of-defun`                  | Previous/next shape declaration |
 | `C-M-f` / `C-M-b`   | `forward/backward-sexp`                   | Move across a shape/triple-expression branch |
@@ -82,6 +86,14 @@ for every OS/architecture isn't practical) — you build it once, locally:
 
 (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode))
 ```
+
+(The ShExJ/ShExR conversion feature — `shexc-shexj.el`, `shexc-shexr.el`,
+`shexc-ts-mode-convert.el` — needs no separate `require`: `shexc-ts-mode`
+loads it lazily, the first time the mode is turned on in a buffer, as long
+as those files are on `load-path` too — which they already are if they sit
+in the same folder as `shexc-ts-mode.el` per the line above. If you instead
+just `M-x load-file` a single file by its full path rather than adding its
+folder to `load-path`, that step is what's missing.)
 
 then run `M-x shexc-ts-mode-install-grammar`. This clones
 [tree-sitter-shexc](https://github.com/ericprud/tree-sitter-shexc) and
@@ -613,10 +625,62 @@ renames *every* occurrence of a label, including references like `EXTENDS
 @<#Foo>`, so after a rename there's nothing left to flag unless some
 occurrence was changed by hand afterwards.
 
+### ShExC/ShExJ/ShExR conversion
+
+`C-c C-v` (`shexc-ts-mode-convert-at-point`) cycles the shape declaration or
+schema at point (or, if the region is active, the region — snapped outward
+to the smallest enclosing shape declaration, or the whole buffer if the
+region spans more than one) through ShExC → ShExJ (JSON) → ShExR (RDF,
+serialized as canonical Turtle) → back to ShExC, converting and replacing
+it in place each time:
+
+```shexc
+<Item> CLOSED { ex:id IRI ; ex:rolls @<RoleCode>+ }
+```
+
+`C-c C-v` once turns that into a fenced, pretty-printed JSON block —
+
+```shexc
+# shexc-ts-mode:BEGIN-SHEXJ 1 lines=18
+# {
+#   "@context": "http://www.w3.org/ns/shex.jsonld",
+#   "type": "ShapeDecl",
+#   ...
+# }
+# shexc-ts-mode:END-SHEXJ 1 lines=18
+```
+
+— which you can edit by hand (it's just `#`-comment text; the rest of the
+file's structure, indentation, `flymake`, `xref`, etc. are completely
+unaffected, since `comment` is valid anywhere in the grammar). `C-c C-v`
+again converts it onward to an equivalent ShExR/Turtle fence, and once more
+converts it back to ShExC — losing comments/whitespace from the fenced
+span, but preserving semantics.
+
+A few things worth knowing:
+
+- Each conversion replaces only the fenced block (`shexc-ts-mode-convert-fence-to-shexc`)
+  or only the declaration/region (`shexc-ts-mode-convert-to-shexj`/`-to-shexr`,
+  also reachable directly without cycling) — point doesn't need to move first.
+- If you hand-edit a fence into something that doesn't parse, converting it
+  onward signals a `user-error` and leaves the buffer untouched rather than
+  guessing; a `flymake` diagnostic also appears over the fence (a second,
+  additional `flymake` backend registered alongside the one described
+  above) so you don't have to wait for the failed conversion attempt to find
+  out.
+- The `lines=N` in each sentinel is a checksum — if you add or remove a
+  line inside a fence by hand without updating it, the fence stops being
+  recognized as one (also flagged by `flymake`).
+- ShExR has no concept of `PREFIX`, so converted IRIs are always written
+  out in full (`<http://...>`), even ones that started out as `ex:p1` in
+  the ShExC source — semantically identical, just not textually identical
+  after a round trip.
+
 ### Feature menu (`C-c C-c`)
 
 `C-c C-c` (`shexc-ts-mode-menu`) opens a `transient` (Magit-style) popup
-summarizing the commands above, grouped into "Navigate" and "Edit". Each
+summarizing the commands above, grouped into "Navigate", "Edit", and
+"Convert". Each
 entry's description includes its *current* keybinding (via
 `where-is-internal`), so the menu stays accurate even if you've rebound
 `shexc-ts-mode-map` — and doubles as a quick-reference "features at a
