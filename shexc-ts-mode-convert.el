@@ -138,12 +138,42 @@ unescaped (see `shexc-ts-mode-convert--unescape-content')."
 ;; Convert-to-fence
 ;; ---------------------------------------------------------------------
 
+(defun shexc-ts-mode-convert--directives-end ()
+  "End position of the buffer's leading run of `base_decl'/`prefix_decl'/
+`import_decl' nodes, or `point-min' if there are none.  Per the grammar
+\(`shex_doc: repeat($._directive), optional(...)' \), these always form a
+contiguous prefix before any shape declaration -- never interspersed --
+so a single scan suffices.  Used so a whole-buffer conversion leaves
+the BASE/PREFIX preamble itself in place rather than swallowing it into
+the fence, where `shexc-ts-mode-convert--directive-ctx' could no longer
+find it to shorten IRIs when converting back."
+  (let ((end (point-min)))
+    (catch 'done
+      (dolist (c (treesit-node-children (treesit-buffer-root-node) t))
+        (if (member (treesit-node-type c) '("base_decl" "prefix_decl" "import_decl"))
+            (setq end (treesit-node-end c))
+          (throw 'done nil))))
+    (when (> end (point-min))
+      ;; Consume up to two of the newlines right after the last
+      ;; directive -- the mandatory line break plus an optional blank-
+      ;; line separator -- so they're excluded from (and thus survive)
+      ;; the caller's delete-region, instead of the fence text getting
+      ;; jammed directly onto the directive's own line.
+      (save-excursion
+        (goto-char end)
+        (when (looking-at "\n") (forward-char 1))
+        (when (looking-at "\n") (forward-char 1))
+        (setq end (point))))
+    end))
+
 (defun shexc-ts-mode-convert--target ()
   "Return (BEG END VALUE-TREE) for the shape/schema to convert at point:
 the active region, snapped outward to the smallest enclosing
 `shape_expr_decl' if the region doesn't already align with one (and to
-the whole buffer if no single decl encloses it); else the
-`shape_expr_decl' at point; else the whole buffer."
+the whole buffer -- minus its leading BASE/PREFIX/IMPORT directives,
+see `shexc-ts-mode-convert--directives-end' -- if no single decl
+encloses it); else the `shape_expr_decl' at point; else likewise the
+whole buffer minus its leading directives."
   (let* ((beg (if (use-region-p) (region-beginning) (point)))
          (end (if (use-region-p) (region-end) (point)))
          (probe (treesit-node-at beg))
@@ -155,7 +185,7 @@ the whole buffer if no single decl encloses it); else the
                 t)))
     (if decl
         (list (treesit-node-start decl) (treesit-node-end decl) (shexc-shexj-compile-node decl))
-      (list (point-min) (point-max) (shexc-shexj-compile-buffer)))))
+      (list (shexc-ts-mode-convert--directives-end) (point-max) (shexc-shexj-compile-buffer)))))
 
 (defun shexc-ts-mode-convert--indent-fence-opening-line (beg)
   "Indent just the line starting at BEG -- the fence's opening `/*
