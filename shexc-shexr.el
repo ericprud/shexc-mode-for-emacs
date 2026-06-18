@@ -209,6 +209,17 @@ ACC) every plist sub-node carrying a non-nil `:id'."
    ((and shexc-shexr--shorten-fn (funcall shexc-shexr--shorten-fn id)))
    (t (concat "<" id ">"))))
 
+(defun shexc-shexr--ref-trailing-skip (ref-text)
+  "Trailing decoration length in REF-TEXT (a `shexc-shexr--ref-text'
+result) that isn't part of the IRI/label's own content -- 1 for the
+closing `>' of a bracketed `<IRI>' form, 0 for a shortened PNAME or a
+`_:label', neither of which has a trailing wrapper.  Needed because
+which form `shexc-shexr--ref-text' picks (and thus how much trailing
+decoration there is to skip when end-anchoring -- see
+`shexc-shexr--mark') depends on whether `shexc-shexr--shorten-fn' is
+active and matches, not on anything visible at the call site."
+  (if (string-suffix-p ">" ref-text) 1 0))
+
 (defun shexc-shexr--turtle-string (text)
   (concat "\""
           (replace-regexp-in-string
@@ -295,6 +306,91 @@ parser never has to special-case it."
   (shexc-shexr--sort-keys
    (remq :context (remq :type (remq :id (shexc-shexr--plist-keys node))))))
 
+;; ---------------------------------------------------------------------
+;; Optional output-position tracking: every render function below
+;; returns a `(TEXT . OFFSET-OR-NIL)' pair rather than plain TEXT --
+;; OFFSET-OR-NIL is the 0-indexed position within TEXT where the
+;; dynamically-bound `shexc-shexr--position-target' value (matched by
+;; `eq', so always a cons or a string -- see shexc-ts-mode-convert.el's
+;; lookup, which never hands this a number/boolean/nil) begins
+;; rendering, or nil if it isn't anywhere in TEXT.  A shared mutable
+;; counter can't do this instead: the flat-vs-broken fits check (below)
+;; renders a flat candidate purely to measure its length and may
+;; discard it, so any "bump a counter as you go" scheme would have to
+;; un-bump on discard, which doesn't compose; returning pairs does, by
+;; construction. `shexc-shexr--position-target' is nil (its default)
+;; for every existing caller, so the offset side of every pair is
+;; always nil and the TEXT side is untouched -- the public entry point
+;; `shexc-shexr-serialize' still returns a plain string in that case,
+;; so this is invisible to all of today's callers/tests.
+;; ---------------------------------------------------------------------
+
+(defvar shexc-shexr--position-target nil
+  "Dynamically bound by `shexc-shexr-serialize' (its TARGET argument) to
+a value (by `eq') somewhere within the schema being serialized whose
+output position should be located; nil means \"don't track\".")
+
+(defun shexc-shexr--lit (text)
+  "Wrap a plain literal TEXT fragment (no possible match inside it) as
+the `(TEXT . OFFSET-OR-NIL)' pair every render function returns."
+  (cons text nil))
+
+(defun shexc-shexr--cat-list (pairs)
+  "Concatenate PAIRS (each a `(TEXT . OFFSET-OR-NIL)', in left-to-right
+emission order) into one such pair: TEXT is the concatenation,
+OFFSET-OR-NIL is the first PAIR's own offset that's non-nil (there's at
+most one, since `shexc-shexr--position-target' identifies a single
+value), adjusted by the combined length of every fragment before it."
+  (let ((running 0) offset)
+    (dolist (p pairs)
+      (when (and (not offset) (cdr p)) (setq offset (+ running (cdr p))))
+      (setq running (+ running (length (car p)))))
+    (cons (mapconcat #'car pairs "") offset)))
+
+(defun shexc-shexr--cat (&rest pairs) (shexc-shexr--cat-list pairs))
+
+(defun shexc-shexr--cat-join (pairs sep)
+  "Like `shexc-shexr--cat-list' but interposing literal SEP between
+PAIRS, mirroring `mapconcat'."
+  (let (spliced (first t))
+    (dolist (p pairs)
+      (unless first (push (shexc-shexr--lit sep) spliced))
+      (push p spliced)
+      (setq first nil))
+    (shexc-shexr--cat-list (nreverse spliced))))
+
+(defun shexc-shexr--mark (v pair &optional trailing-skip)
+  "Override PAIR's offset to point at the END of V's own literal text
+within PAIR's TEXT (default: the very end of TEXT) if V itself is the
+active `shexc-shexr--position-target', regardless of what PAIR's own
+offset already was (always nil in practice: a value can't be `eq' to
+one of its own descendants, so nothing nested inside V's normal
+rendering could have matched if V itself is the target).
+
+Anchored at the END, not the start: a value's rendering can gain or
+lose an arbitrary-length PREFIX (a PNAME's `ex:' vs. a full namespace
+IRI, an `sx:Ref'-wrapping decoration, ...) between hops, but the
+trailing characters of V's own literal text -- e.g. a PNAME's local
+part, the tail of an IRI -- stay the same, so measuring from the end
+survives that change where measuring from the start wouldn't (see
+`shexc-ts-mode-convert--locate-target').  TRAILING-SKIP lets a caller
+that wraps V's own literal text in fixed decoration AFTER it (` ]',
+say) say how many characters of PAIR's TEXT to trim off the end before
+landing on V's own literal text -- the default of 0 is right whenever
+PAIR's text already *is* V's own literal rendering with nothing after
+it."
+  (if (and shexc-shexr--position-target (eq v shexc-shexr--position-target))
+      (cons (car pair) (- (length (car pair)) (or trailing-skip 0)))
+    pair))
+
+(defun shexc-shexr--mark-ref (id)
+  "Render ID (an IRI/`_:label' string) via `shexc-shexr--ref-text',
+marked as ID's own end-anchored position if ID is the active
+`shexc-shexr--position-target' -- the common case of a bare reference
+with no further decoration wrapped around it."
+  (let ((text (shexc-shexr--ref-text id)))
+    (shexc-shexr--mark id (shexc-shexr--lit text) (shexc-shexr--ref-trailing-skip text))))
+
 ;; -- Flat rendering: always one line, no indentation/breaking -- used both
 ;; as the actual compact output and, via its length, as the input to the
 ;; fits-on-one-line check in the pretty (depth-aware) renderer below.
@@ -305,34 +401,48 @@ for a Turtle string literal, `value' for a value-set/Annotation-object
 entry, `ref' (the default) for a wrapped `sx:Ref' id-reference -- see
 `shexc-shexr--key-string-mode'."
   (cond
-   ((eq v t) "true")
-   ((numberp v) (number-to-string v))
-   ((stringp v) (pcase string-mode
-                  ('plain (shexc-shexr--turtle-string v))
-                  ('ref (shexc-shexr--serialize-ref v))
-                  (_ (shexc-shexr--ref-text v))))
-   ((shexc-shexr--literal-value-p v) (shexc-shexr--serialize-literal v))
+   ((eq v t) (shexc-shexr--lit "true"))
+   ((numberp v) (shexc-shexr--lit (number-to-string v)))
+   ((stringp v)
+    (pcase string-mode
+      ('plain (shexc-shexr--mark v (shexc-shexr--lit (shexc-shexr--turtle-string v)) 1)) ; skip closing quote
+      ('ref (let* ((prefix "[ a sx:Ref ; sx:id ")
+                   (text (shexc-shexr--ref-text v)))
+              (shexc-shexr--mark v (shexc-shexr--lit (concat prefix text " ]"))
+                                  (+ (length " ]") (shexc-shexr--ref-trailing-skip text)))))
+      (_ (shexc-shexr--mark-ref v))))
+   ((shexc-shexr--literal-value-p v) (shexc-shexr--lit (shexc-shexr--serialize-literal v)))
    ((and (consp v) (keywordp (car v)))
     (if (plist-get v :id)
-        (shexc-shexr--ref-text (plist-get v :id))
-      (concat "[ " (shexc-shexr--flat-body v) " ]")))
-   ((listp v) (concat "(" (mapconcat (lambda (x) (shexc-shexr--flat-value x string-mode)) v " ") ")"))
+        (shexc-shexr--mark-ref (plist-get v :id))
+      (shexc-shexr--mark v (shexc-shexr--cat (shexc-shexr--lit "[ ") (shexc-shexr--flat-body v) (shexc-shexr--lit " ]")) (length " ]"))))
+   ((listp v)
+    (shexc-shexr--mark
+     v
+     (shexc-shexr--cat
+      (shexc-shexr--lit "(")
+      (shexc-shexr--cat-join (mapcar (lambda (x) (shexc-shexr--flat-value x string-mode)) v) " ")
+      (shexc-shexr--lit ")"))))
    (t (error "shexc-shexr: cannot serialize value %S" v))))
 
 (defun shexc-shexr--flat-prop (type key value)
-  (concat "sx:" (substring (symbol-name key) 1) " "
-          (if (eq key :extra)
-              (mapconcat #'shexc-shexr--ref-text value ", ")
-            (shexc-shexr--flat-value value (shexc-shexr--key-string-mode type key)))))
+  (let ((label (concat "sx:" (substring (symbol-name key) 1) " ")))
+    (if (eq key :extra)
+        (shexc-shexr--cat
+         (shexc-shexr--lit label)
+         (shexc-shexr--cat-join
+          (mapcar #'shexc-shexr--mark-ref value)
+          ", "))
+      (shexc-shexr--cat (shexc-shexr--lit label) (shexc-shexr--flat-value value (shexc-shexr--key-string-mode type key))))))
 
 (defun shexc-shexr--flat-body (node)
   "Render NODE's `a sx:Type ; prop val ; ...' content on one line (no
 enclosing `[ ]'/trailing `.')."
-  (mapconcat #'identity
-             (cons (concat "a sx:" (plist-get node :type))
-                   (mapcar (lambda (k) (shexc-shexr--flat-prop (plist-get node :type) k (plist-get node k)))
-                           (shexc-shexr--node-keys node)))
-             " ; "))
+  (shexc-shexr--cat-join
+   (cons (shexc-shexr--lit (concat "a sx:" (plist-get node :type)))
+         (mapcar (lambda (k) (shexc-shexr--flat-prop (plist-get node :type) k (plist-get node k)))
+                 (shexc-shexr--node-keys node)))
+   " ; "))
 
 ;; -- Pretty rendering: depth-aware.  A nested `[ ... ]'/`( ... )' pair is
 ;; kept compact (the flat form above) if it fits within WIDTH columns at
@@ -356,51 +466,75 @@ function only ever produces its flat (always-one-line) form, so a long
 ID (or a narrow WIDTH) needs this to break it into the same
 `[\\n  a sx:Ref ;\\n  sx:id <iri>\\n]' shape any other nested object
 would get."
-  (let ((flat (shexc-shexr--serialize-ref id)))
+  (let ((flat (shexc-shexr--serialize-ref id))
+        (text (shexc-shexr--ref-text id)))
     (if (shexc-shexr--fits-p col width flat)
-        flat
-      (let ((inner (+ indent 2)))
-        (concat "[\n" (make-string inner ?\s) "a sx:Ref ;\n"
-                (make-string inner ?\s) "sx:id " (shexc-shexr--ref-text id)
-                "\n" (make-string indent ?\s) "]")))))
+        (shexc-shexr--mark id (shexc-shexr--lit flat)
+                            (+ (length " ]") (shexc-shexr--ref-trailing-skip text)))
+      (let* ((inner (+ indent 2))
+             (prefix (concat "[\n" (make-string inner ?\s) "a sx:Ref ;\n" (make-string inner ?\s) "sx:id "))
+             (suffix (concat "\n" (make-string indent ?\s) "]")))
+        (shexc-shexr--mark
+         id
+         (shexc-shexr--lit (concat prefix text suffix))
+         (+ (length suffix) (shexc-shexr--ref-trailing-skip text)))))))
 
 (defun shexc-shexr--pretty-value (v string-mode indent col width)
   (cond
-   ((eq v t) "true")
-   ((numberp v) (number-to-string v))
+   ((eq v t) (shexc-shexr--lit "true"))
+   ((numberp v) (shexc-shexr--lit (number-to-string v)))
    ((stringp v) (pcase string-mode
-                  ('plain (shexc-shexr--turtle-string v))
+                  ('plain (shexc-shexr--mark v (shexc-shexr--lit (shexc-shexr--turtle-string v)) 1))
                   ('ref (shexc-shexr--pretty-ref v indent col width))
-                  (_ (shexc-shexr--ref-text v))))
-   ((shexc-shexr--literal-value-p v) (shexc-shexr--serialize-literal v))
+                  (_ (shexc-shexr--mark-ref v))))
+   ((shexc-shexr--literal-value-p v) (shexc-shexr--lit (shexc-shexr--serialize-literal v)))
    ((and (consp v) (keywordp (car v)))
     (if (plist-get v :id)
-        (shexc-shexr--ref-text (plist-get v :id))
-      (let ((flat (concat "[ " (shexc-shexr--flat-body v) " ]")))
+        (shexc-shexr--mark-ref (plist-get v :id))
+      (let* ((flat-pair (shexc-shexr--flat-body v))
+             (flat (concat "[ " (car flat-pair) " ]")))
         (if (shexc-shexr--fits-p col width flat)
-            flat
-          (let ((inner (+ indent 2)))
-            (concat "[\n" (make-string inner ?\s)
-                    (shexc-shexr--pretty-body v inner width)
-                    "\n" (make-string indent ?\s) "]"))))))
+            (shexc-shexr--mark v (shexc-shexr--cat (shexc-shexr--lit "[ ") flat-pair (shexc-shexr--lit " ]")) (length " ]"))
+          (let* ((inner (+ indent 2))
+                 (prefix (concat "[\n" (make-string inner ?\s)))
+                 (suffix (concat "\n" (make-string indent ?\s) "]")))
+            (shexc-shexr--mark
+             v
+             (shexc-shexr--cat
+              (shexc-shexr--lit prefix)
+              (shexc-shexr--pretty-body v inner width)
+              (shexc-shexr--lit suffix))
+             (length suffix)))))))
    ((listp v)
-    (let ((flat (shexc-shexr--flat-value v string-mode)))
-      (if (or (null v) (shexc-shexr--fits-p col width flat))
-          flat
-        (let ((inner (+ indent 2)))
-          (concat "(\n" (make-string inner ?\s)
-                  (mapconcat (lambda (x) (shexc-shexr--pretty-value x string-mode inner inner width))
-                             v (concat "\n" (make-string inner ?\s)))
-                  "\n" (make-string indent ?\s) ")")))))
+    (let ((flat-pair (shexc-shexr--flat-value v string-mode)))
+      (if (or (null v) (shexc-shexr--fits-p col width (car flat-pair)))
+          flat-pair
+        (let* ((inner (+ indent 2))
+               (prefix (concat "(\n" (make-string inner ?\s)))
+               (suffix (concat "\n" (make-string indent ?\s) ")")))
+          (shexc-shexr--mark
+           v
+           (shexc-shexr--cat
+            (shexc-shexr--lit prefix)
+            (shexc-shexr--cat-join
+             (mapcar (lambda (x) (shexc-shexr--pretty-value x string-mode inner inner width)) v)
+             (concat "\n" (make-string inner ?\s)))
+            (shexc-shexr--lit suffix))
+           (length suffix))))))
    (t (error "shexc-shexr: cannot serialize value %S" v))))
 
 (defun shexc-shexr--pretty-prop (type key value indent width)
   (let ((label (concat "sx:" (substring (symbol-name key) 1) " ")))
-    (concat label
-            (if (eq key :extra)
-                (mapconcat #'shexc-shexr--ref-text value ", ")
-              (shexc-shexr--pretty-value value (shexc-shexr--key-string-mode type key)
-                                          indent (+ indent (length label)) width)))))
+    (if (eq key :extra)
+        (shexc-shexr--cat
+         (shexc-shexr--lit label)
+         (shexc-shexr--cat-join
+          (mapcar #'shexc-shexr--mark-ref value)
+          ", "))
+      (shexc-shexr--cat
+       (shexc-shexr--lit label)
+       (shexc-shexr--pretty-value value (shexc-shexr--key-string-mode type key)
+                                   indent (+ indent (length label)) width)))))
 
 (defun shexc-shexr--pretty-body (node indent width)
   "Render NODE's `a sx:Type ; prop val ; ...' content (no enclosing
@@ -410,9 +544,8 @@ statement (which is always broken, regardless of length, by the existing
 convention of one statement per blank-line-separated paragraph)."
   (let ((type (plist-get node :type))
         (pad (make-string indent ?\s)))
-    (mapconcat
-     #'identity
-     (cons (concat "a sx:" type)
+    (shexc-shexr--cat-join
+     (cons (shexc-shexr--lit (concat "a sx:" type))
            (mapcar (lambda (k) (shexc-shexr--pretty-prop type k (plist-get node k) indent width))
                    (shexc-shexr--node-keys node)))
      (concat " ;\n" pad))))
@@ -422,7 +555,7 @@ convention of one statement per blank-line-separated paragraph)."
 ;; ---------------------------------------------------------------------
 
 ;;;###autoload
-(defun shexc-shexr-serialize (schema &optional width prefixes base)
+(defun shexc-shexr-serialize (schema &optional width prefixes base target)
   "Serialize SCHEMA (a Schema value-tree, see shexc-shexj.el) to canonical
 ShExR Turtle text.  WIDTH (default `shexc-shexr--fill-column') is the
 column a nested `[ ... ]'/`( ... )' pair must fit within (at its actual
@@ -436,25 +569,44 @@ the output that falls under one of them is shortened accordingly (see
 `shexc-shexr--make-shortener'), and only the entries that actually got
 used are emitted as a header (ShExC's own `PREFIX name: <ns>'/`BASE
 <ns>' syntax, no `@prefix'/trailing `.') right after the fixed
-`@prefix sx: <...> .' line."
+`@prefix sx: <...> .' line.
+
+TARGET, if non-nil, is a value (by `eq') somewhere within SCHEMA to
+locate in the output: with TARGET, this returns `(TEXT . OFFSET-OR-NIL)'
+instead of plain TEXT (OFFSET-OR-NIL the 0-indexed position in TEXT
+where TARGET's own rendering ENDS (not begins -- see `shexc-shexr--mark'
+for why anchoring at the end survives a prefix-length change, e.g. a
+PNAME shortened to/from a full namespace IRI, where anchoring at the
+start wouldn't), nil if TARGET never matched
+anything -- e.g. it's an atom like `t'/a number, which this never
+treats as a locatable target, or it simply isn't part of SCHEMA)."
   (setq width (or width shexc-shexr--fill-column))
-  (let* ((shexc-shexr--shorten-fn (and (or prefixes base) (shexc-shexr--make-shortener prefixes base)))
+  (let* ((shexc-shexr--position-target target)
+         (shexc-shexr--shorten-fn (and (or prefixes base) (shexc-shexr--make-shortener prefixes base)))
          (shexc-shexr--used-prefixes nil)
          (shexc-shexr--used-base nil)
          (hoisted (shexc-shexr--all-hoisted schema))
-         (body (concat
-                "[] " (shexc-shexr--pretty-body schema 2 width) " .\n"
-                (mapconcat
-                 (lambda (n) (concat "\n" (shexc-shexr--ref-text (plist-get n :id)) " "
-                                     (shexc-shexr--pretty-body n 2 width) " .\n"))
-                 hoisted "")))
+         (body-pair
+          (shexc-shexr--cat
+           (shexc-shexr--lit "[] ")
+           (shexc-shexr--mark schema (shexc-shexr--pretty-body schema 2 width))
+           (shexc-shexr--lit " .\n")
+           (shexc-shexr--cat-list
+            (mapcar
+             (lambda (n)
+               (shexc-shexr--cat
+                (shexc-shexr--lit (concat "\n" (shexc-shexr--ref-text (plist-get n :id)) " "))
+                (shexc-shexr--mark n (shexc-shexr--pretty-body n 2 width))
+                (shexc-shexr--lit " .\n")))
+             hoisted))))
          (header
           (concat
            (mapconcat (lambda (entry) (format "PREFIX %s: <%s>\n" (car entry) (cdr entry)))
                       (seq-filter (lambda (entry) (member (car entry) shexc-shexr--used-prefixes)) prefixes)
                       "")
-           (if shexc-shexr--used-base (format "BASE <%s>\n" base) ""))))
-    (concat shexc-shexr--prefix-line header "\n" body)))
+           (if shexc-shexr--used-base (format "BASE <%s>\n" base) "")))
+         (final-pair (shexc-shexr--cat (shexc-shexr--lit (concat shexc-shexr--prefix-line header "\n")) body-pair)))
+    (if target final-pair (car final-pair))))
 
 ;; ---------------------------------------------------------------------
 ;; Narrow parser: the precise inverse of the serializer above, and

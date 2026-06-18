@@ -873,6 +873,61 @@ context active at NODE's position."
     (list :context shexc-shexj--context-iri :type "Schema"
           :shapes (list (shexc-shexj--compile-shape-expr-decl ctx node)))))
 
+;; ---------------------------------------------------------------------
+;; Optional position tracking: ts-node span -> compiled value, for
+;; callers (shexc-ts-mode-convert.el) that want to locate, in the
+;; compiled value-tree, whatever a specific tree-sitter node compiled
+;; to -- e.g. to keep point on "the same thing" across a ShExC -> ShExJ/
+;; ShExR conversion.  Implemented via `:around' advice over every
+;; tracked compiler function rather than editing each function's body:
+;; purely additive (no compiler logic changes, so it can't affect any
+;; existing compile result), and the tracked-function list is derived
+;; programmatically rather than hand-transcribed, which is the safer
+;; choice for completeness -- a hand-maintained list of ~35 names is
+;; exactly the kind of thing this project has already gotten bitten by
+;; missing an entry from (see M5 "audit every code path" in project
+;; notes).  Every `--compile-*' function (the only exception,
+;; `--compile-schema-from-root', takes ROOT first and a `shape_expr_decl'
+;; or nil last -- not "the node it's compiling" -- so it's excluded) and
+;; a short explicit list of non-`compile-'-prefixed helpers that also
+;; resolve a specific ts-node to a value-tree fragment in their own
+;; right (`--iri-node-text', `--node-constraint-from-atom') all happen
+;; to share the convention "the ts-node this call is compiling is the
+;; last argument" -- relied on here to find it generically.
+;; `--and-or-operand' resolves a ts-node too but as its *second*
+;; argument, not last, so it's deliberately left off this list rather
+;; than special-cased; its result still gets tracked indirectly via
+;; whichever tracked function it delegates to internally.
+;; ---------------------------------------------------------------------
+
+(defvar shexc-shexj--position-table nil
+  "When non-nil (a hash table, `let'-bound by a caller before compiling),
+populated as a side effect of compilation: every tracked compiler
+function's `(cons (treesit-node-start node) (treesit-node-end node))'
+maps to the value it returned for that NODE.  nil by default, so
+ordinary compilation (every existing caller/test) pays no cost at all.")
+
+(defun shexc-shexj--position-tracking-advice (orig-fn &rest args)
+  (let* ((result (apply orig-fn args))
+         (node (car (last args))))
+    (when (and shexc-shexj--position-table (treesit-node-p node))
+      (puthash (cons (treesit-node-start node) (treesit-node-end node))
+               result shexc-shexj--position-table))
+    result))
+
+(defconst shexc-shexj--position-tracked-functions
+  (append
+   (apropos-internal "\\`shexc-shexj--compile-" #'fboundp)
+   '(shexc-shexj--iri-node-text
+     shexc-shexj--node-constraint-from-atom))
+  "Every function `shexc-shexj--position-tracking-advice' is applied to
+-- see the Commentary above this var's definition for why this list is
+built this way.")
+
+(dolist (fn shexc-shexj--position-tracked-functions)
+  (unless (eq fn 'shexc-shexj--compile-schema-from-root)
+    (advice-add fn :around #'shexc-shexj--position-tracking-advice)))
+
 ;;;###autoload
 (defun shexc-shexj-buffer-directive-ctx ()
   "A `shexc-shexj--ctx' reflecting every BASE/PREFIX declaration in the
@@ -921,17 +976,86 @@ falls back to the default full `<IRI>' form.  Let-bind this -- never
 `setq' it -- around a `shexc-shexj-decompile' call to get PREFIX/BASE-
 aware shorthand; nil by default, so plain callers are unaffected.")
 
+;; ---------------------------------------------------------------------
+;; Optional output-position tracking, identically shaped to (and shared
+;; with) the JSON adapter's below -- both directions need the same
+;; `(TEXT . OFFSET-OR-NIL)'-pair plumbing for the same reason (see that
+;; section's Commentary), so there's no point duplicating it within this
+;; one file the way it's duplicated *across* shexc-shexj.el/
+;; shexc-shexr.el (those stay independent on purpose -- see this file's
+;; header comment on that boundary).
+;; ---------------------------------------------------------------------
+
+(defvar shexc-shexj--position-target nil
+  "Dynamically bound by `shexc-shexj-decompile'/`shexc-shexj-to-json' to
+a value (by `eq') somewhere within the value-tree being rendered whose
+output position should be located; nil means \"don't track\".")
+
+(defun shexc-shexj--lit (text) (cons text nil))
+
+(defun shexc-shexj--cat-list (pairs)
+  (let ((running 0) offset)
+    (dolist (p pairs)
+      (when (and (not offset) (cdr p)) (setq offset (+ running (cdr p))))
+      (setq running (+ running (length (car p)))))
+    (cons (mapconcat #'car pairs "") offset)))
+
+(defun shexc-shexj--cat (&rest pairs) (shexc-shexj--cat-list pairs))
+
+(defun shexc-shexj--cat-join (pairs sep)
+  (let (spliced (first t))
+    (dolist (p pairs)
+      (unless first (push (shexc-shexj--lit sep) spliced))
+      (push p spliced)
+      (setq first nil))
+    (shexc-shexj--cat-list (nreverse spliced))))
+
+(defun shexc-shexj--mark (v pair &optional trailing-skip)
+  "See shexc-shexr.el's identically-shaped `shexc-shexr--mark' for why
+this is anchored at the END of V's own literal text (minus TRAILING-
+SKIP trailing characters of decoration), not the start."
+  (if (and shexc-shexj--position-target (eq v shexc-shexj--position-target))
+      (cons (car pair) (- (length (car pair)) (or trailing-skip 0)))
+    pair))
+
+(defun shexc-shexj--decompile-bracket-trailing-skip (text)
+  "Trailing decoration length in TEXT (a `shexc-shexj--decompile-iri'/
+`-label' result) that isn't part of the IRI/label's own content -- 1
+for the closing `>' of a bracketed `<IRI>' form (whether the full
+absolute form or a shortener's own `<...>' shorthand), 0 for a PNAME or
+a `_:label', neither of which has a trailing wrapper -- mirrors
+shexc-shexr.el's `shexc-shexr--ref-trailing-skip'."
+  (if (string-suffix-p ">" text) 1 0))
+
 (defun shexc-shexj--decompile-iri (iri)
   (or (and shexc-shexj-decompile-iri-shortener (funcall shexc-shexj-decompile-iri-shortener iri))
       (concat "<" iri ">")))
 
+(defun shexc-shexj--mark-iri (iri)
+  "Render IRI via `shexc-shexj--decompile-iri', marked as IRI's own
+end-anchored position if IRI is the active `shexc-shexj--position-
+target'."
+  (let ((text (shexc-shexj--decompile-iri iri)))
+    (shexc-shexj--mark iri (shexc-shexj--lit text) (shexc-shexj--decompile-bracket-trailing-skip text))))
+
 (defun shexc-shexj--decompile-label (iri-or-bnode)
   (if (string-prefix-p "_:" iri-or-bnode) iri-or-bnode (shexc-shexj--decompile-iri iri-or-bnode)))
 
-(defun shexc-shexj--decompile-ref (iri-or-bnode) (concat "@" (shexc-shexj--decompile-label iri-or-bnode)))
+(defun shexc-shexj--mark-label (iri-or-bnode)
+  (if (string-prefix-p "_:" iri-or-bnode)
+      (shexc-shexj--mark iri-or-bnode (shexc-shexj--lit iri-or-bnode))
+    (shexc-shexj--mark-iri iri-or-bnode)))
+
+(defun shexc-shexj--mark-ref (iri-or-bnode)
+  (shexc-shexj--cat (shexc-shexj--lit "@") (shexc-shexj--mark-label iri-or-bnode)))
 
 (defun shexc-shexj--decompile-predicate (iri)
   (if (string= iri shexc-shexj--rdf-type-iri) "a" (shexc-shexj--decompile-iri iri)))
+
+(defun shexc-shexj--mark-predicate (iri)
+  (if (string= iri shexc-shexj--rdf-type-iri)
+      (shexc-shexj--mark iri (shexc-shexj--lit "a"))
+    (shexc-shexj--mark-iri iri)))
 
 (defun shexc-shexj--escape-string (text)
   (replace-regexp-in-string
@@ -943,29 +1067,35 @@ aware shorthand; nil by default, so plain callers are unaffected.")
 
 (defun shexc-shexj--decompile-literal-value (lit)
   "LIT is an ObjectLiteral plist (:value [:type] [:language])."
-  (let ((value (plist-get lit :value)) (type (plist-get lit :type)) (lang (plist-get lit :language)))
+  (let* ((value (plist-get lit :value)) (type (plist-get lit :type)) (lang (plist-get lit :language))
+         (quoted (shexc-shexj--mark lit (shexc-shexj--lit (shexc-shexj--decompile-quoted-string value)) 1)))
     (cond
-     (lang (format "%s@%s" (shexc-shexj--decompile-quoted-string value) lang))
-     (type (format "%s^^%s" (shexc-shexj--decompile-quoted-string value) (shexc-shexj--decompile-iri type)))
-     (t (shexc-shexj--decompile-quoted-string value)))))
+     (lang (shexc-shexj--cat quoted (shexc-shexj--lit (concat "@" lang))))
+     (type (shexc-shexj--cat quoted (shexc-shexj--lit "^^") (shexc-shexj--mark-iri type)))
+     (t quoted))))
 
 (defun shexc-shexj--escape-code (text)
   (replace-regexp-in-string "[%\\]" (lambda (m) (concat "\\" m)) text t t))
 
 (defun shexc-shexj--decompile-sem-act (act)
-  (let ((name (shexc-shexj--decompile-iri (plist-get act :name)))
+  (let ((name (shexc-shexj--mark-iri (plist-get act :name)))
         (code (plist-get act :code)))
-    (if code (format "%%%s{%s%%}" name (shexc-shexj--escape-code code)) (format "%%%s%%" name))))
+    (shexc-shexj--cat
+     (shexc-shexj--lit "%") name
+     (if code (shexc-shexj--lit (concat "{" (shexc-shexj--escape-code code) "%}")) (shexc-shexj--lit "%")))))
 
 (defun shexc-shexj--decompile-sem-acts (acts)
-  (mapconcat (lambda (a) (concat " " (shexc-shexj--decompile-sem-act a))) acts ""))
+  (shexc-shexj--cat-list (mapcar (lambda (a) (shexc-shexj--cat (shexc-shexj--lit " ") (shexc-shexj--decompile-sem-act a))) acts)))
 
 (defun shexc-shexj--decompile-annotations (annots)
-  (mapconcat (lambda (a)
-               (let* ((obj (plist-get a :object))
-                      (obj-text (if (stringp obj) (shexc-shexj--decompile-iri obj) (shexc-shexj--decompile-literal-value obj))))
-                 (format " // %s %s" (shexc-shexj--decompile-predicate (plist-get a :predicate)) obj-text)))
-             annots ""))
+  (shexc-shexj--cat-list
+   (mapcar (lambda (a)
+             (let* ((obj (plist-get a :object))
+                    (obj-pair (if (stringp obj) (shexc-shexj--mark-iri obj) (shexc-shexj--decompile-literal-value obj))))
+               (shexc-shexj--cat
+                (shexc-shexj--lit " // ") (shexc-shexj--mark-predicate (plist-get a :predicate))
+                (shexc-shexj--lit " ") obj-pair)))
+           annots)))
 
 (defun shexc-shexj--decompile-cardinality (te)
   (let ((min (plist-get te :min)) (max (plist-get te :max)))
@@ -984,53 +1114,55 @@ aware shorthand; nil by default, so plain callers are unaffected.")
 
 (defun shexc-shexj--decompile-iri-exclusion (e)
   (if (and (consp e) (equal (plist-get e :type) "IriStem"))
-      (concat "-" (shexc-shexj--decompile-iri (plist-get e :stem)) "~")
-    (concat "-" (shexc-shexj--decompile-iri e))))
+      (shexc-shexj--mark e (shexc-shexj--cat (shexc-shexj--lit "-") (shexc-shexj--mark-iri (plist-get e :stem)) (shexc-shexj--lit "~")) 1)
+    (shexc-shexj--cat (shexc-shexj--lit "-") (shexc-shexj--mark-iri e))))
 
 (defun shexc-shexj--decompile-literal-exclusion (e)
   (if (and (consp e) (equal (plist-get e :type) "LiteralStem"))
-      (concat "-" (shexc-shexj--decompile-quoted-string (plist-get e :stem)) "~")
-    (concat "-" (shexc-shexj--decompile-quoted-string e))))
+      (shexc-shexj--mark e (shexc-shexj--cat (shexc-shexj--lit "-") (shexc-shexj--mark (plist-get e :stem) (shexc-shexj--lit (shexc-shexj--decompile-quoted-string (plist-get e :stem)))) (shexc-shexj--lit "~")) 1)
+    (shexc-shexj--cat (shexc-shexj--lit "-") (shexc-shexj--mark e (shexc-shexj--lit (shexc-shexj--decompile-quoted-string e))))))
 
 (defun shexc-shexj--decompile-language-exclusion (e)
   (if (and (consp e) (equal (plist-get e :type) "LanguageStem"))
-      (concat "-@" (plist-get e :stem) "~")
-    (concat "-@" e)))
+      (shexc-shexj--mark e (shexc-shexj--lit (concat "-@" (plist-get e :stem) "~")) 1)
+    (shexc-shexj--mark e (shexc-shexj--lit (concat "-@" e)))))
 
 (defun shexc-shexj--decompile-value-set-entry (v)
   (if (stringp v)
-      (shexc-shexj--decompile-iri v)
-    (pcase (plist-get v :type)
-      ("IriStem" (concat (shexc-shexj--decompile-iri (plist-get v :stem)) "~"))
-      ("IriStemRange"
-       (if (shexc-shexj--wildcard-p (plist-get v :stem))
-           (concat ". " (mapconcat #'shexc-shexj--decompile-iri-exclusion (plist-get v :exclusions) " "))
-         (concat (shexc-shexj--decompile-iri (plist-get v :stem)) "~"
-                 (mapconcat #'shexc-shexj--decompile-iri-exclusion (plist-get v :exclusions) " "))))
-      ("LiteralStem" (concat (shexc-shexj--decompile-quoted-string (plist-get v :stem)) "~"))
-      ("LiteralStemRange"
-       (if (shexc-shexj--wildcard-p (plist-get v :stem))
-           (concat ". " (mapconcat #'shexc-shexj--decompile-literal-exclusion (plist-get v :exclusions) " "))
-         (concat (shexc-shexj--decompile-quoted-string (plist-get v :stem)) "~"
-                 (mapconcat #'shexc-shexj--decompile-literal-exclusion (plist-get v :exclusions) " "))))
-      ("Language" (concat "@" (plist-get v :languageTag)))
-      ("LanguageStem"
-       (if (shexc-shexj--wildcard-p (plist-get v :stem)) "@~" (concat "@" (plist-get v :stem) "~")))
-      ("LanguageStemRange"
-       (if (shexc-shexj--wildcard-p (plist-get v :stem))
-           ;; Round-trips through the `. -@exclusion...' dot-form, not
-           ;; `@~ ...': the latter reparses (via
-           ;; `shexc-shexj--compile-language-stem-range') to an
-           ;; empty-string stem, not Wildcard -- only the dot-exclusions
-           ;; form (`shexc-shexj--compile-dot-exclusions') produces a real
-           ;; Wildcard stem.
-           (concat ". " (mapconcat #'shexc-shexj--decompile-language-exclusion (plist-get v :exclusions) " "))
-         (concat "@" (plist-get v :stem) "~"
-                 (mapconcat #'shexc-shexj--decompile-language-exclusion (plist-get v :exclusions) " "))))
-      (_ (shexc-shexj--decompile-literal-value v)))))
+      (shexc-shexj--mark-iri v)
+    (shexc-shexj--mark
+     v
+     (pcase (plist-get v :type)
+       ("IriStem" (shexc-shexj--cat (shexc-shexj--mark-iri (plist-get v :stem)) (shexc-shexj--lit "~")))
+       ("IriStemRange"
+        (if (shexc-shexj--wildcard-p (plist-get v :stem))
+            (shexc-shexj--cat (shexc-shexj--lit ". ") (shexc-shexj--cat-join (mapcar #'shexc-shexj--decompile-iri-exclusion (plist-get v :exclusions)) " "))
+          (shexc-shexj--cat (shexc-shexj--mark-iri (plist-get v :stem)) (shexc-shexj--lit "~")
+                             (shexc-shexj--cat-join (mapcar #'shexc-shexj--decompile-iri-exclusion (plist-get v :exclusions)) " "))))
+       ("LiteralStem" (shexc-shexj--cat (shexc-shexj--mark (plist-get v :stem) (shexc-shexj--lit (shexc-shexj--decompile-quoted-string (plist-get v :stem)))) (shexc-shexj--lit "~")))
+       ("LiteralStemRange"
+        (if (shexc-shexj--wildcard-p (plist-get v :stem))
+            (shexc-shexj--cat (shexc-shexj--lit ". ") (shexc-shexj--cat-join (mapcar #'shexc-shexj--decompile-literal-exclusion (plist-get v :exclusions)) " "))
+          (shexc-shexj--cat (shexc-shexj--mark (plist-get v :stem) (shexc-shexj--lit (shexc-shexj--decompile-quoted-string (plist-get v :stem)))) (shexc-shexj--lit "~")
+                             (shexc-shexj--cat-join (mapcar #'shexc-shexj--decompile-literal-exclusion (plist-get v :exclusions)) " "))))
+       ("Language" (shexc-shexj--lit (concat "@" (plist-get v :languageTag))))
+       ("LanguageStem"
+        (if (shexc-shexj--wildcard-p (plist-get v :stem)) (shexc-shexj--lit "@~") (shexc-shexj--lit (concat "@" (plist-get v :stem) "~"))))
+       ("LanguageStemRange"
+        (if (shexc-shexj--wildcard-p (plist-get v :stem))
+            ;; Round-trips through the `. -@exclusion...' dot-form, not
+            ;; `@~ ...': the latter reparses (via
+            ;; `shexc-shexj--compile-language-stem-range') to an
+            ;; empty-string stem, not Wildcard -- only the dot-exclusions
+            ;; form (`shexc-shexj--compile-dot-exclusions') produces a real
+            ;; Wildcard stem.
+            (shexc-shexj--cat (shexc-shexj--lit ". ") (shexc-shexj--cat-join (mapcar #'shexc-shexj--decompile-language-exclusion (plist-get v :exclusions)) " "))
+          (shexc-shexj--cat (shexc-shexj--lit (concat "@" (plist-get v :stem) "~"))
+                             (shexc-shexj--cat-join (mapcar #'shexc-shexj--decompile-language-exclusion (plist-get v :exclusions)) " "))))
+       (_ (shexc-shexj--decompile-literal-value v))))))
 
 (defun shexc-shexj--decompile-value-set (values)
-  (concat "[" (mapconcat #'shexc-shexj--decompile-value-set-entry values " ") "]"))
+  (shexc-shexj--cat (shexc-shexj--lit "[") (shexc-shexj--cat-join (mapcar #'shexc-shexj--decompile-value-set-entry values) " ") (shexc-shexj--lit "]")))
 
 ;; -- node constraints -----------------------------------------------------
 
@@ -1054,16 +1186,21 @@ aware shorthand; nil by default, so plain callers are unaffected.")
   (let* ((kind (plist-get nc :nodeKind))
          (datatype (plist-get nc :datatype))
          (values (plist-get nc :values))
-         (head (cond
-                ((equal kind "iri") "IRI")
-                ((equal kind "bnode") "BNODE")
-                ((equal kind "nonliteral") "NONLITERAL")
-                ((equal kind "literal") "LITERAL")
-                (datatype (shexc-shexj--decompile-iri datatype))
-                (values (shexc-shexj--decompile-value-set values))
-                (t nil)))
+         (head-pair (cond
+                     ((equal kind "iri") (shexc-shexj--lit "IRI"))
+                     ((equal kind "bnode") (shexc-shexj--lit "BNODE"))
+                     ((equal kind "nonliteral") (shexc-shexj--lit "NONLITERAL"))
+                     ((equal kind "literal") (shexc-shexj--lit "LITERAL"))
+                     (datatype (shexc-shexj--mark-iri datatype))
+                     (values (shexc-shexj--decompile-value-set values))
+                     (t nil)))
          (facets (shexc-shexj--decompile-facets nc)))
-    (string-trim (mapconcat #'identity (delq nil (list head facets)) " "))))
+    (cond
+     ((and head-pair (not (string-empty-p facets)))
+      (shexc-shexj--cat head-pair (shexc-shexj--lit (concat " " facets))))
+     (head-pair head-pair)
+     ((not (string-empty-p facets)) (shexc-shexj--lit facets))
+     (t (shexc-shexj--lit "")))))
 
 ;; -- shapes and shape expressions ------------------------------------------
 
@@ -1081,37 +1218,39 @@ thesized chains are flattened into one level by
 `shexc-shexj--and-or-operand') -- so bare same-precedence juxtaposition
 here would silently flatten on the next recompile and fail to
 round-trip."
-  (let ((text (shexc-shexj--decompile-shape-expr-ref se)))
+  (let ((pair (shexc-shexj--decompile-shape-expr-ref se)))
     (if (or (< (shexc-shexj--shape-expr-prec se) min-prec)
             (and same-type (consp se) (equal (plist-get se :type) same-type)))
-        (concat "(" text ")")
-      text)))
+        (shexc-shexj--cat (shexc-shexj--lit "(") pair (shexc-shexj--lit ")"))
+      pair)))
 
 (defun shexc-shexj--decompile-shape-expr-ref (x)
-  (if (stringp x) (shexc-shexj--decompile-ref x) (shexc-shexj--decompile-shape-expr x)))
+  (if (stringp x) (shexc-shexj--mark-ref x) (shexc-shexj--decompile-shape-expr x)))
 
 (defun shexc-shexj--decompile-shape-expr (se)
-  (pcase (plist-get se :type)
-    ("ShapeAnd" (mapconcat (lambda (x) (shexc-shexj--decompile-operand x 2 "ShapeAnd")) (plist-get se :shapeExprs) " AND "))
-    ("ShapeOr" (mapconcat (lambda (x) (shexc-shexj--decompile-operand x 1 "ShapeOr")) (plist-get se :shapeExprs) " OR "))
-    ("ShapeNot" (concat "NOT " (shexc-shexj--decompile-operand (plist-get se :shapeExpr) 3)))
-    ("NodeConstraint" (shexc-shexj--decompile-node-constraint se))
-    ("Shape" (shexc-shexj--decompile-shape se))
-    ("ShapeExternal" "EXTERNAL")
-    (_ (error "shexc-shexj: cannot decompile shapeExpr of type `%s'" (plist-get se :type)))))
+  (shexc-shexj--mark
+   se
+   (pcase (plist-get se :type)
+     ("ShapeAnd" (shexc-shexj--cat-join (mapcar (lambda (x) (shexc-shexj--decompile-operand x 2 "ShapeAnd")) (plist-get se :shapeExprs)) " AND "))
+     ("ShapeOr" (shexc-shexj--cat-join (mapcar (lambda (x) (shexc-shexj--decompile-operand x 1 "ShapeOr")) (plist-get se :shapeExprs)) " OR "))
+     ("ShapeNot" (shexc-shexj--cat (shexc-shexj--lit "NOT ") (shexc-shexj--decompile-operand (plist-get se :shapeExpr) 3)))
+     ("NodeConstraint" (shexc-shexj--decompile-node-constraint se))
+     ("Shape" (shexc-shexj--decompile-shape se))
+     ("ShapeExternal" (shexc-shexj--lit "EXTERNAL"))
+     (_ (error "shexc-shexj: cannot decompile shapeExpr of type `%s'" (plist-get se :type))))))
 
 (defun shexc-shexj--decompile-shape (shape)
   (let ((extends (plist-get shape :extends))
         (extra (plist-get shape :extra))
         (closed (plist-get shape :closed))
         (expr (plist-get shape :expression)))
-    (concat
-     (mapconcat (lambda (e) (concat "EXTENDS " (shexc-shexj--decompile-ref e) " ")) extends "")
-     (if extra (concat "EXTRA " (mapconcat #'shexc-shexj--decompile-iri extra " ") " ") "")
-     (if closed "CLOSED " "")
-     "{\n"
-     (if expr (concat "  " (shexc-shexj--decompile-top-triple-expr expr) "\n") "")
-     "}"
+    (shexc-shexj--cat
+     (shexc-shexj--cat-list (mapcar (lambda (e) (shexc-shexj--cat (shexc-shexj--lit "EXTENDS ") (shexc-shexj--mark-ref e) (shexc-shexj--lit " "))) extends))
+     (if extra (shexc-shexj--cat (shexc-shexj--lit "EXTRA ") (shexc-shexj--cat-join (mapcar #'shexc-shexj--mark-iri extra) " ") (shexc-shexj--lit " ")) (shexc-shexj--lit ""))
+     (shexc-shexj--lit (if closed "CLOSED " ""))
+     (shexc-shexj--lit "{\n")
+     (if expr (shexc-shexj--cat (shexc-shexj--lit "  ") (shexc-shexj--decompile-top-triple-expr expr) (shexc-shexj--lit "\n")) (shexc-shexj--lit ""))
+     (shexc-shexj--lit "}")
      (shexc-shexj--decompile-annotations (plist-get shape :annotations))
      (shexc-shexj--decompile-sem-acts (plist-get shape :semActs)))))
 
@@ -1121,18 +1260,21 @@ round-trip."
 
 (defun shexc-shexj--decompile-group-inner (te)
   "Just TE's (EachOf/OneOf) `e1 SEP e2 ...' text, no wrapping/decoration."
-  (mapconcat #'shexc-shexj--decompile-triple-expr (plist-get te :expressions) (shexc-shexj--group-sep te)))
+  (shexc-shexj--cat-join (mapcar #'shexc-shexj--decompile-triple-expr (plist-get te :expressions)) (shexc-shexj--group-sep te)))
 
 (defun shexc-shexj--decompile-bracketed (te)
   "Always wraps TE (an EachOf/OneOf) in `( ... )', attaching its own
 cardinality/annotations/semActs/id.  This form -- a `bracketed_triple_
 expr' -- is the *only* way an EachOf/OneOf can appear as one element of
 an enclosing group; a bare nested EachOf/OneOf is not valid ShExC."
-  (concat (if (plist-get te :id) (concat "$" (shexc-shexj--decompile-label (plist-get te :id)) " ") "")
-          "(" (shexc-shexj--decompile-group-inner te) ")"
-          (shexc-shexj--decompile-cardinality te)
-          (shexc-shexj--decompile-annotations (plist-get te :annotations))
-          (shexc-shexj--decompile-sem-acts (plist-get te :semActs))))
+  (shexc-shexj--mark
+   te
+   (shexc-shexj--cat
+    (if (plist-get te :id) (shexc-shexj--cat (shexc-shexj--lit "$") (shexc-shexj--mark-label (plist-get te :id)) (shexc-shexj--lit " ")) (shexc-shexj--lit ""))
+    (shexc-shexj--lit "(") (shexc-shexj--decompile-group-inner te) (shexc-shexj--lit ")")
+    (shexc-shexj--lit (shexc-shexj--decompile-cardinality te))
+    (shexc-shexj--decompile-annotations (plist-get te :annotations))
+    (shexc-shexj--decompile-sem-acts (plist-get te :semActs)))))
 
 (defun shexc-shexj--decompile-triple-expr (te)
   "TE as an ELEMENT of an enclosing group -- EachOf/OneOf always
@@ -1140,7 +1282,7 @@ parenthesized here; see `shexc-shexj--decompile-top-triple-expr' for the
 one context (a Shape's bare top-level :expression) where that's not
 required."
   (if (stringp te)
-      (concat "&" (shexc-shexj--decompile-label te))
+      (shexc-shexj--cat (shexc-shexj--lit "&") (shexc-shexj--mark-label te))
     (pcase (plist-get te :type)
       ("TripleConstraint" (shexc-shexj--decompile-triple-constraint te))
       ((or "EachOf" "OneOf") (shexc-shexj--decompile-bracketed te)))))
@@ -1150,7 +1292,7 @@ required."
 cardinality/semActs/annotations/id (reachable only when the Shape's
 sole top-level element happened to be a singleton bracketed_triple_expr)."
   (if (stringp te)
-      (concat "&" (shexc-shexj--decompile-label te))
+      (shexc-shexj--cat (shexc-shexj--lit "&") (shexc-shexj--mark-label te))
     (let ((has-extra (or (plist-get te :min) (plist-get te :semActs) (plist-get te :annotations) (plist-get te :id))))
       (pcase (plist-get te :type)
         ("TripleConstraint" (shexc-shexj--decompile-triple-constraint te))
@@ -1158,42 +1300,59 @@ sole top-level element happened to be a singleton bracketed_triple_expr)."
         (_ (shexc-shexj--decompile-group-inner te))))))
 
 (defun shexc-shexj--decompile-triple-constraint (tc)
-  (concat
-   (if (plist-get tc :id) (concat "$" (shexc-shexj--decompile-label (plist-get tc :id)) " ") "")
-   (if (plist-get tc :inverse) "^" "")
-   (shexc-shexj--decompile-predicate (plist-get tc :predicate))
-   " "
-   (let ((ve (plist-get tc :valueExpr))) (if ve (shexc-shexj--decompile-shape-expr-ref ve) "."))
-   (shexc-shexj--decompile-cardinality tc)
-   (shexc-shexj--decompile-annotations (plist-get tc :annotations))
-   (shexc-shexj--decompile-sem-acts (plist-get tc :semActs))))
+  (shexc-shexj--mark
+   tc
+   (shexc-shexj--cat
+    (if (plist-get tc :id) (shexc-shexj--cat (shexc-shexj--lit "$") (shexc-shexj--mark-label (plist-get tc :id)) (shexc-shexj--lit " ")) (shexc-shexj--lit ""))
+    (shexc-shexj--lit (if (plist-get tc :inverse) "^" ""))
+    (shexc-shexj--mark-predicate (plist-get tc :predicate))
+    (shexc-shexj--lit " ")
+    (let ((ve (plist-get tc :valueExpr))) (if ve (shexc-shexj--decompile-shape-expr-ref ve) (shexc-shexj--lit ".")))
+    (shexc-shexj--lit (shexc-shexj--decompile-cardinality tc))
+    (shexc-shexj--decompile-annotations (plist-get tc :annotations))
+    (shexc-shexj--decompile-sem-acts (plist-get tc :semActs)))))
 
 ;; -- top level: ShapeDecl / Schema ---------------------------------------
 
 (defun shexc-shexj--decompile-shape-decl (decl)
-  (format "%s%s %s\n"
-          (if (plist-get decl :abstract) "ABSTRACT " "")
-          (shexc-shexj--decompile-label (plist-get decl :id))
-          (shexc-shexj--decompile-shape-expr-ref (plist-get decl :shapeExpr))))
+  (shexc-shexj--mark
+   decl
+   (shexc-shexj--cat
+    (shexc-shexj--lit (if (plist-get decl :abstract) "ABSTRACT " ""))
+    (shexc-shexj--mark-label (plist-get decl :id))
+    (shexc-shexj--lit " ")
+    (shexc-shexj--decompile-shape-expr-ref (plist-get decl :shapeExpr))
+    (shexc-shexj--lit "\n"))
+   1))
 
 (defun shexc-shexj--decompile-schema (schema)
   (let ((start (plist-get schema :start))
         (start-acts (plist-get schema :startActs))
         (imports (plist-get schema :imports))
         (shapes (plist-get schema :shapes)))
-    (concat
-     (mapconcat (lambda (i) (concat "IMPORT " (shexc-shexj--decompile-iri i) "\n")) imports "")
-     (if start-acts (concat (mapconcat #'shexc-shexj--decompile-sem-act start-acts "\n") "\n") "")
-     (if start (concat "START = " (shexc-shexj--decompile-shape-expr-ref start) "\n\n") "")
-     (mapconcat #'shexc-shexj--decompile-shape-decl shapes "\n"))))
+    (shexc-shexj--mark
+     schema
+     (shexc-shexj--cat
+      (shexc-shexj--cat-list (mapcar (lambda (i) (shexc-shexj--cat (shexc-shexj--lit "IMPORT ") (shexc-shexj--mark-iri i) (shexc-shexj--lit "\n"))) imports))
+      (if start-acts (shexc-shexj--cat (shexc-shexj--cat-join (mapcar #'shexc-shexj--decompile-sem-act start-acts) "\n") (shexc-shexj--lit "\n")) (shexc-shexj--lit ""))
+      (if start (shexc-shexj--cat (shexc-shexj--lit "START = ") (shexc-shexj--decompile-shape-expr-ref start) (shexc-shexj--lit "\n\n")) (shexc-shexj--lit ""))
+      (shexc-shexj--cat-join (mapcar #'shexc-shexj--decompile-shape-decl shapes) "\n")))))
 
 ;;;###autoload
-(defun shexc-shexj-decompile (value-tree)
-  "Decompile VALUE-TREE -- a Schema or a single ShapeDecl -- to ShExC text."
-  (pcase (plist-get value-tree :type)
-    ("Schema" (shexc-shexj--decompile-schema value-tree))
-    ("ShapeDecl" (shexc-shexj--decompile-shape-decl value-tree))
-    (_ (error "shexc-shexj-decompile: expected a Schema or ShapeDecl value-tree, got %S" value-tree))))
+(defun shexc-shexj-decompile (value-tree &optional target)
+  "Decompile VALUE-TREE -- a Schema or a single ShapeDecl -- to ShExC text.
+
+TARGET, if non-nil, is a value (by `eq') somewhere within VALUE-TREE to
+locate in the output: with TARGET, this returns `(TEXT . OFFSET-OR-NIL)'
+instead of plain TEXT (OFFSET-OR-NIL the 0-indexed position in TEXT
+where TARGET's own rendering ENDS -- see `shexc-shexj--mark' -- nil if
+TARGET never matched anything)."
+  (let* ((shexc-shexj--position-target target)
+         (pair (pcase (plist-get value-tree :type)
+                 ("Schema" (shexc-shexj--decompile-schema value-tree))
+                 ("ShapeDecl" (shexc-shexj--decompile-shape-decl value-tree))
+                 (_ (error "shexc-shexj-decompile: expected a Schema or ShapeDecl value-tree, got %S" value-tree)))))
+    (if target pair (car pair))))
 
 ;; ---------------------------------------------------------------------
 ;; JSON adapter: value-tree <-> ShExJ JSON text.
@@ -1227,38 +1386,65 @@ sole top-level element happened to be a singleton bracketed_triple_expr)."
     (while plist (push (cons (car plist) (cadr plist)) pairs) (setq plist (cddr plist)))
     (nreverse pairs)))
 
+;; ---------------------------------------------------------------------
+;; Output-position tracking for this JSON adapter reuses the same
+;; `(TEXT . OFFSET-OR-NIL)'-pair combinators defined above (next to the
+;; decompiler, the other direction that needs them) -- see that
+;; section's Commentary.
+;; ---------------------------------------------------------------------
+
 (defun shexc-shexj--print-json (value indent)
   (cond
-   ((eq value t) "true")
-   ((numberp value) (number-to-string value))
-   ((stringp value) (shexc-shexj--decompile-quoted-string value)) ; same escaping rules as ShExC strings
-   ((and (consp value) (keywordp (car value))) (shexc-shexj--print-json-object value indent))
-   ((null value) "[]")
-   ((listp value) (shexc-shexj--print-json-array value indent))
+   ((eq value t) (shexc-shexj--lit "true"))
+   ((numberp value) (shexc-shexj--lit (number-to-string value)))
+   ((stringp value) ; same escaping rules as ShExC strings
+    (shexc-shexj--mark value (shexc-shexj--lit (shexc-shexj--decompile-quoted-string value)) 1)) ; skip closing quote
+   ((and (consp value) (keywordp (car value))) (shexc-shexj--mark value (shexc-shexj--print-json-object value indent)))
+   ((null value) (shexc-shexj--lit "[]"))
+   ((listp value) (shexc-shexj--mark value (shexc-shexj--print-json-array value indent)))
    (t (error "shexc-shexj: cannot print %S as JSON" value))))
 
 (defun shexc-shexj--print-json-object (plist indent)
   (let ((pairs (shexc-shexj--plist-pairs plist)) (inner (+ indent 2)))
-    (if (null pairs) "{}"
-      (concat "{\n"
-              (mapconcat
-               (lambda (kv)
-                 (concat (make-string inner ?\s) (shexc-shexj--decompile-quoted-string (shexc-shexj--json-key-name (car kv)))
-                         ": " (shexc-shexj--print-json (cdr kv) inner)))
-               pairs ",\n")
-              "\n" (make-string indent ?\s) "}"))))
+    (if (null pairs) (shexc-shexj--lit "{}")
+      (shexc-shexj--cat
+       (shexc-shexj--lit "{\n")
+       (shexc-shexj--cat-join
+        (mapcar
+         (lambda (kv)
+           (shexc-shexj--cat
+            (shexc-shexj--lit (concat (make-string inner ?\s)
+                                       (shexc-shexj--decompile-quoted-string (shexc-shexj--json-key-name (car kv)))
+                                       ": "))
+            (shexc-shexj--print-json (cdr kv) inner)))
+         pairs)
+        ",\n")
+       (shexc-shexj--lit (concat "\n" (make-string indent ?\s) "}"))))))
 
 (defun shexc-shexj--print-json-array (lst indent)
-  (if (null lst) "[]"
+  (if (null lst) (shexc-shexj--lit "[]")
     (let ((inner (+ indent 2)))
-      (concat "[\n"
-              (mapconcat (lambda (v) (concat (make-string inner ?\s) (shexc-shexj--print-json v inner))) lst ",\n")
-              "\n" (make-string indent ?\s) "]"))))
+      (shexc-shexj--cat
+       (shexc-shexj--lit "[\n")
+       (shexc-shexj--cat-join
+        (mapcar (lambda (v) (shexc-shexj--cat (shexc-shexj--lit (make-string inner ?\s)) (shexc-shexj--print-json v inner))) lst)
+        ",\n")
+       (shexc-shexj--lit (concat "\n" (make-string indent ?\s) "]"))))))
 
 ;;;###autoload
-(defun shexc-shexj-to-json (value-tree)
-  "Pretty-print VALUE-TREE as ShExJ JSON text."
-  (shexc-shexj--print-json value-tree 0))
+(defun shexc-shexj-to-json (value-tree &optional target)
+  "Pretty-print VALUE-TREE as ShExJ JSON text.
+
+TARGET, if non-nil, is a value (by `eq') somewhere within VALUE-TREE to
+locate in the output: with TARGET, this returns `(TEXT . OFFSET-OR-NIL)'
+instead of plain TEXT (OFFSET-OR-NIL the 0-indexed position in TEXT
+where TARGET's own rendering ENDS (not begins -- see shexc-shexr.el's
+`shexc-shexr--mark' for why), nil if TARGET never matched
+anything -- e.g. it's an atom like `t'/a number, which this never
+treats as a locatable target, or it simply isn't part of VALUE-TREE)."
+  (let* ((shexc-shexj--position-target target)
+         (pair (shexc-shexj--print-json value-tree 0)))
+    (if target pair (car pair))))
 
 (defun shexc-shexj--normalize-from-json (value)
   "Rename `:@context' to `:context', recursively over a freshly-
