@@ -628,7 +628,7 @@ just for this."
   ;; command, not a layout-index path, so this stays correct regardless
   ;; of how many entries "Edit" itself ends up with) -- one more line in
   ;; that column, rather than a third column of its own.
-  (transient-append-suffix 'shexc-ts-mode-menu 'shexc-ts-mode-set-prefix-map
+  (transient-append-suffix 'shexc-ts-mode-menu 'shexc-ts-mode-prefix-menu
     '("v" shexc-ts-mode-convert-menu
       :description
       (lambda () (shexc-ts-mode--menu-desc

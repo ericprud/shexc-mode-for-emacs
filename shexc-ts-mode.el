@@ -2237,6 +2237,27 @@ all the way back to normal editing (not just back to
               (if shexc-ts-mode-highlight-reachable-include-predicates "X" " "))))
    ("q" "Done" transient-quit-all)])
 
+(transient-define-prefix shexc-ts-mode-prefix-menu ()
+  "Submenu of `PREFIX'-declaration commands -- kept out of
+`shexc-ts-mode-menu' itself (reached there via a single \"p\" entry in
+the \"Edit\" column), the same way `shexc-ts-mode-convert-menu' is."
+  ["Prefix maps"
+   ("p" shexc-ts-mode-insert-prefix
+    :description
+    (lambda ()
+      (shexc-ts-mode--menu-desc
+       (format "Insert `PREFIX' for prefix at point (%s map)"
+               (shexc-ts-mode--prefix-map-names-string))
+       'shexc-ts-mode-insert-prefix)))
+   ("m" shexc-ts-mode-set-prefix-map
+    :description
+    (lambda ()
+      (shexc-ts-mode--menu-desc
+       (format "Switch active prefix map (currently %s)"
+               (shexc-ts-mode--prefix-map-names-string))
+       'shexc-ts-mode-set-prefix-map)))
+   ("q" "Done" transient-quit-all)])
+
 (transient-define-prefix shexc-ts-mode-menu ()
   "Feature menu for `shexc-ts-mode', showing live keybindings."
   [["Navigate"
@@ -2274,20 +2295,11 @@ all the way back to normal editing (not just back to
      (lambda () (shexc-ts-mode--menu-desc
                  "Toggle `#' / `/* */' comment style"
                  'shexc-ts-mode-toggle-comment-style)))
-    ("P" shexc-ts-mode-insert-prefix
+    ("p" shexc-ts-mode-prefix-menu
      :description
      (lambda ()
-       (shexc-ts-mode--menu-desc
-        (format "Insert `PREFIX' for prefix at point (%s map)"
-                (shexc-ts-mode--prefix-map-names-string))
-        'shexc-ts-mode-insert-prefix)))
-    ("M" shexc-ts-mode-set-prefix-map
-     :description
-     (lambda ()
-       (shexc-ts-mode--menu-desc
-        (format "Switch active prefix map (currently %s)"
-                (shexc-ts-mode--prefix-map-names-string))
-        'shexc-ts-mode-set-prefix-map)))]])
+       (format "Prefix map options...        (%s)"
+               (shexc-ts-mode--prefix-map-names-string))))]])
 
 ;;; Major mode
 
