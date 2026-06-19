@@ -45,6 +45,7 @@
 (require 'pcase)
 (require 'hideshow)
 (require 'flymake)
+(require 'seq)
 ;; For `shexc-shexj-buffer-directive-ctx'/`-resolve-label', used by
 ;; `shexc-ts-mode--flymake-undefined-shapes' to compare shape references
 ;; by resolved IRI rather than raw source text.  Safe as an eager,
@@ -137,8 +138,17 @@ libtree-sitter-shexc.so/.dylib into %s"
 ;; on where that association is authoritatively published.
 ;; `shexc-ts-mode-insert-prefix' and the "Undefined prefix" flymake
 ;; diagnostic (`shexc-ts-mode--flymake-undefined-prefixes') consult the
-;; active map (`shexc-ts-mode-prefix-map') to propose a `PREFIX'
+;; active map(s) (`shexc-ts-mode-prefix-map') to propose a `PREFIX'
 ;; declaration for an undeclared prefix.
+;;
+;; `shexc-ts-mode-prefix-map' may name more than one map, tried in
+;; order with the first match winning -- the intended use is a small
+;; project-specific map (added to `shexc-ts-mode-prefix-maps', e.g. via
+;; a `.dir-locals.el', see that variable's docstring) listed *before* a
+;; big general one like "rdfa", so the project map's own entries (and
+;; any prefix the general map simply doesn't have, e.g. a bespoke
+;; `shex:') take precedence without needing to fork or edit "rdfa"
+;; itself.
 
 (defconst shexc-ts-mode--prefix-map-rdfa
   '(:source "https://www.w3.org/2011/rdfa-context/rdfa-1.1"
@@ -263,15 +273,26 @@ init file:
   :group 'shexc-ts)
 
 (defcustom shexc-ts-mode-prefix-map "rdfa"
-  "Name of the active entry in `shexc-ts-mode-prefix-maps'.
+  "Name (or, for several, a list of names) of the active entry/entries
+in `shexc-ts-mode-prefix-maps'.
 
 `shexc-ts-mode-insert-prefix' and the \"Undefined prefix\" flymake
 diagnostic (`shexc-ts-mode--flymake-undefined-prefixes') look up
-undeclared prefixes here.  Set this as a file- or directory-local
-variable to use a different map in specific buffers, e.g.
-\"wikidata\" when editing Wikidata EntitySchemas."
-  :type 'string
-  :safe #'stringp
+undeclared prefixes here.  When this is a list, e.g. `(\"my-project\"
+\"rdfa\")', each named map is tried in order and the first one with a
+matching prefix wins -- so a small project-specific map listed first
+can supply (or override) entries the general map after it either
+lacks or would otherwise give a different answer for.
+
+Set this as a file- or directory-local variable to use a different map
+\(or combination\) in specific buffers/projects, e.g. \"wikidata\" when
+editing Wikidata EntitySchemas, or `(\"my-project\" \"rdfa\")' for a
+project with its own conventions layered on top of RDFa's.  See
+`shexc-ts-mode-prefix-maps' for how to define \"my-project\", and
+`shexc-ts-mode-set-prefix-map' for an interactive way to change this
+for just the current buffer."
+  :type '(choice string (repeat string))
+  :safe (lambda (val) (or (stringp val) (and (listp val) (seq-every-p #'stringp val))))
   :group 'shexc-ts)
 
 ;;; Syntax table
@@ -1906,13 +1927,30 @@ E.g. \"ex\" for both `ex:p1' and `ex:', and \"\" for `:p1'."
 
 ;;;; Prefix maps: lookup and insertion
 
+(defun shexc-ts-mode--prefix-map-names ()
+  "`shexc-ts-mode-prefix-map' as a list of names, regardless of whether
+that variable currently holds a single string or already a list."
+  (if (listp shexc-ts-mode-prefix-map)
+      shexc-ts-mode-prefix-map
+    (list shexc-ts-mode-prefix-map)))
+
+(defun shexc-ts-mode--prefix-map-names-string ()
+  "`shexc-ts-mode--prefix-map-names', joined for display in a message."
+  (mapconcat #'identity (shexc-ts-mode--prefix-map-names) ", "))
+
 (defun shexc-ts-mode--prefix-map-lookup (prefix)
-  "Return the IRI for PREFIX in the active `shexc-ts-mode-prefix-map'.
-Return nil if PREFIX is empty, `shexc-ts-mode-prefix-map' has no entry
-in `shexc-ts-mode-prefix-maps', or that map has no entry for PREFIX."
+  "Return (IRI . MAP-NAME) for PREFIX: each of `shexc-ts-mode-prefix-map's
+named maps (see `shexc-ts-mode--prefix-map-names') is tried in order,
+and MAP-NAME is whichever one first has a matching entry.  Return nil
+if PREFIX is empty or no active map has an entry for it."
   (unless (string-empty-p prefix)
-    (let ((map (cdr (assoc shexc-ts-mode-prefix-map shexc-ts-mode-prefix-maps))))
-      (cdr (assoc prefix (plist-get map :prefixes))))))
+    (catch 'shexc-ts-mode--prefix-map-lookup-found
+      (dolist (name (shexc-ts-mode--prefix-map-names))
+        (let* ((map (cdr (assoc name shexc-ts-mode-prefix-maps)))
+               (iri (cdr (assoc prefix (plist-get map :prefixes)))))
+          (when iri
+            (throw 'shexc-ts-mode--prefix-map-lookup-found (cons iri name)))))
+      nil)))
 
 (defun shexc-ts-mode--prefixed-name-at (pos)
   "Return the `prefixed_name' node at POS, or nil if none."
@@ -1920,6 +1958,14 @@ in `shexc-ts-mode-prefix-maps', or that map has no entry for PREFIX."
    (treesit-node-at pos)
    (lambda (n) (string= (treesit-node-type n) "prefixed_name"))
    t))
+
+(defun shexc-ts-mode--declared-prefixes ()
+  "Return the list of prefix names (e.g. \"ex\") the buffer already
+declares via `PREFIX ex: <...>'."
+  (mapcar (lambda (n) (shexc-ts-mode--prefix-name (treesit-node-text n t)))
+          (treesit-query-capture
+           (treesit-buffer-root-node)
+           '((prefix_decl name: (pname_ns) @name)) nil nil t)))
 
 (defun shexc-ts-mode--insert-prefix-decl (prefix iri)
   "Insert the line `PREFIX PREFIX: <IRI>' into the current buffer.
@@ -1946,42 +1992,59 @@ buffer has none of those."
 
 Looks up the prefix of the `prefixed_name' at point (e.g. \"ex\" in
 `ex:Foo') in the active `shexc-ts-mode-prefix-map' and, if found there,
-inserts `PREFIX ex: <IRI>' via `shexc-ts-mode--insert-prefix-decl'.
+inserts `PREFIX ex: <IRI>' via `shexc-ts-mode--insert-prefix-decl'.  A
+no-op (just a `message', not an error) if the buffer already declares
+that prefix -- safe to invoke repeatedly, e.g. from a kbd macro fixing
+up several `prefixed_name's at once, without piling up duplicate
+declarations.
 
 Signals a `user-error' if point is not on a prefixed name, or its
-prefix has no entry in the active map -- in the latter case, either
-add the prefix to `shexc-ts-mode-prefix-maps' or declare it directly
-with `PREFIX ex: <...>'."
+prefix has no entry in any of the active maps (see
+`shexc-ts-mode-prefix-map') -- in the latter case, either add the
+prefix to `shexc-ts-mode-prefix-maps' or declare it directly with
+`PREFIX ex: <...>'."
   (interactive)
   (let ((node (shexc-ts-mode--prefixed-name-at (point))))
     (unless node
       (user-error "No prefixed name at point"))
-    (let* ((prefix (shexc-ts-mode--prefix-name (treesit-node-text node t)))
-           (iri (shexc-ts-mode--prefix-map-lookup prefix)))
-      (unless iri
-        (user-error "Prefix `%s:' is not in the %s prefix map"
-                     prefix shexc-ts-mode-prefix-map))
-      (save-excursion (shexc-ts-mode--insert-prefix-decl prefix iri))
-      (message "Inserted `PREFIX %s: <%s>'" prefix iri))))
+    (let ((prefix (shexc-ts-mode--prefix-name (treesit-node-text node t))))
+      (if (member prefix (shexc-ts-mode--declared-prefixes))
+          (message "Prefix `%s:' is already declared" prefix)
+        (let ((found (shexc-ts-mode--prefix-map-lookup prefix)))
+          (unless found
+            (user-error "Prefix `%s:' is not in any of the active prefix maps (%s)"
+                        prefix (shexc-ts-mode--prefix-map-names-string)))
+          (let ((iri (car found)) (map-name (cdr found)))
+            (save-excursion (shexc-ts-mode--insert-prefix-decl prefix iri))
+            (message "Inserted `PREFIX %s: <%s>' (from the %s map)" prefix iri map-name)))))))
 
 ;;;###autoload
-(defun shexc-ts-mode-set-prefix-map (name)
-  "Set the buffer-local active prefix map to NAME, for this buffer only.
+(defun shexc-ts-mode-set-prefix-map (names)
+  "Set the buffer-local active prefix map(s) to NAMES, for this buffer only.
 
-NAME must be a key of `shexc-ts-mode-prefix-maps' (e.g. \"rdfa\" or
-\"wikidata\"); `shexc-ts-mode-insert-prefix' and the \"Undefined
-prefix\" flymake diagnostic then look up prefixes in that map.
+NAMES is a key of `shexc-ts-mode-prefix-maps' (e.g. \"rdfa\") or a list
+of keys (e.g. `(\"my-project\" \"rdfa\")', tried in order with the
+first match winning -- see `shexc-ts-mode-prefix-map'); a plain string
+is accepted too, for callers that only ever want one map.
+`shexc-ts-mode-insert-prefix' and the \"Undefined prefix\" flymake
+diagnostic then look up prefixes there.
+
+Interactively, select one or more maps (`completing-read-multiple' --
+type a comma between names to pick more than one).
 
 This setting is buffer-local and does not persist when the buffer is
-reopened -- to make a choice persistent, set
-`shexc-ts-mode-prefix-map' as a file- or directory-local variable
-instead."
+reopened -- to make a choice persistent for a whole project, set
+`shexc-ts-mode-prefix-map' as a directory-local variable instead (see
+`shexc-ts-mode-prefix-maps' for an example `.dir-locals.el')."
   (interactive
-   (list (completing-read "Prefix map: "
-                           (mapcar #'car shexc-ts-mode-prefix-maps)
-                           nil t shexc-ts-mode-prefix-map)))
-  (setq-local shexc-ts-mode-prefix-map name)
-  (message "Active prefix map: %s" name))
+   (list (completing-read-multiple
+          "Prefix map(s) (first match wins): "
+          (mapcar #'car shexc-ts-mode-prefix-maps)
+          nil t (shexc-ts-mode--prefix-map-names-string))))
+  (when (stringp names) (setq names (list names)))
+  (setq-local shexc-ts-mode-prefix-map (if (cdr names) names (car names)))
+  (message "Active prefix map%s: %s"
+           (if (cdr names) "s" "") (mapconcat #'identity names ", ")))
 
 (defun shexc-ts-mode--flymake-undefined-prefixes ()
   "Return `:error' diagnostics for `prefixed_name's with an undeclared prefix.
@@ -1991,26 +2054,22 @@ datatype, ...) whose prefix has no matching `PREFIX' declaration.
 When the prefix has an entry in the active `shexc-ts-mode-prefix-map',
 the diagnostic message names the IRI that `shexc-ts-mode-insert-prefix'
 would declare for it."
-  (let ((declared
-         (mapcar (lambda (n) (shexc-ts-mode--prefix-name (treesit-node-text n t)))
-                 (treesit-query-capture
-                  (treesit-buffer-root-node)
-                  '((prefix_decl name: (pname_ns) @name)) nil nil t))))
+  (let ((declared (shexc-ts-mode--declared-prefixes)))
     (delq nil
           (mapcar
            (lambda (n)
              (let* ((text (treesit-node-text n t))
                     (prefix (shexc-ts-mode--prefix-name text)))
                (unless (member prefix declared)
-                 (let ((iri (shexc-ts-mode--prefix-map-lookup prefix)))
+                 (let ((found (shexc-ts-mode--prefix-map-lookup prefix)))
                    (flymake-make-diagnostic
                     (current-buffer)
                     (treesit-node-start n) (treesit-node-end n)
                     :error
-                    (if iri
+                    (if found
                         (format "Undefined prefix %s: `M-x shexc-ts-mode-insert-prefix' \
-adds `PREFIX %s: <%s>' from the %s prefix map"
-                                prefix prefix iri shexc-ts-mode-prefix-map)
+adds `PREFIX %s: <%s>' from the %s map"
+                                prefix prefix (car found) (cdr found))
                       (format "Undefined prefix %s:" prefix)))))))
            (treesit-query-capture
             (treesit-buffer-root-node) '((prefixed_name) @n) nil nil t)))))
@@ -2220,14 +2279,14 @@ all the way back to normal editing (not just back to
      (lambda ()
        (shexc-ts-mode--menu-desc
         (format "Insert `PREFIX' for prefix at point (%s map)"
-                shexc-ts-mode-prefix-map)
+                (shexc-ts-mode--prefix-map-names-string))
         'shexc-ts-mode-insert-prefix)))
     ("M" shexc-ts-mode-set-prefix-map
      :description
      (lambda ()
        (shexc-ts-mode--menu-desc
         (format "Switch active prefix map (currently %s)"
-                shexc-ts-mode-prefix-map)
+                (shexc-ts-mode--prefix-map-names-string))
         'shexc-ts-mode-set-prefix-map)))]])
 
 ;;; Major mode

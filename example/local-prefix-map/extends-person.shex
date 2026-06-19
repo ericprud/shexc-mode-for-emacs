@@ -1,0 +1,14 @@
+# Deliberately has no `PREFIX ex: <...>' declaration of its own -- see
+# the `.dir-locals.el' in this same directory, which supplies it via
+# a project-specific entry in `shexc-ts-mode-prefix-maps'.  Try `C-c
+# C-p' (`shexc-ts-mode-insert-prefix') on any `ex:' name below, or
+# just look at the flymake diagnostic it's flagged with.
+
+<Item> CLOSED { ex:id IRI ; ex:rolls @<RoleCode>+ }
+
+<RoleCode> [ ex:Manager ex:Engineer ex:Laboror ex:Human ex:Robot ]
+
+<TLabor> EXTENDS @<Item>
+         CLOSED { ex:glovesSize . ; ex:bootSize . }
+     AND
+         EXTRA ex:rolls { ex:rolls [ex:Laboror] }
