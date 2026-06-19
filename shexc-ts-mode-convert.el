@@ -598,30 +598,41 @@ back to ShExC, closing the loop."
 (with-eval-after-load 'shexc-ts-mode
   (define-key shexc-ts-mode-map (kbd "C-c C-v") #'shexc-ts-mode-convert-at-point))
 
+(transient-define-prefix shexc-ts-mode-convert-menu ()
+  "Submenu of `shexc-ts-mode-convert' format-conversion commands -- kept
+out of `shexc-ts-mode-menu' itself (reached there via a single \"v\"
+entry in the \"Edit\" column) so that menu doesn't need a third column
+just for this."
+  ["Convert"
+   ("v" shexc-ts-mode-convert-at-point
+    :description
+    (lambda () (shexc-ts-mode--menu-desc
+                "Cycle ShExC -> ShExJ -> ShExR -> ShExC"
+                'shexc-ts-mode-convert-at-point)))
+   ("j" shexc-ts-mode-convert-to-shexj
+    :description
+    (lambda () (shexc-ts-mode--menu-desc
+                "Convert to ShExJ" 'shexc-ts-mode-convert-to-shexj)))
+   ("r" shexc-ts-mode-convert-to-shexr
+    :description
+    (lambda () (shexc-ts-mode--menu-desc
+                "Convert to ShExR (Turtle)" 'shexc-ts-mode-convert-to-shexr)))
+   ("b" shexc-ts-mode-convert-fence-to-shexc
+    :description
+    (lambda () (shexc-ts-mode--menu-desc
+                "Convert fence back to ShExC" 'shexc-ts-mode-convert-fence-to-shexc)))
+   ("q" "Done" transient-quit-all)])
+
 (with-eval-after-load 'transient
-  ;; LOC '(0 1) -- shexc-ts-mode-menu's whole `[[...]["Edit"...]]' body is
-  ;; one implicit top-level "columns" group (layout index 0), whose own
-  ;; children are the "Navigate"/"Edit" groups (index 1 = "Edit") -- append
-  ;; after that to add "Convert" as a third sibling column.
-  (transient-append-suffix 'shexc-ts-mode-menu '(0 1)
-    ["Convert"
-     ("v" shexc-ts-mode-convert-at-point
+  ;; Append as a sibling of the "Edit" column's last entry (found by its
+  ;; command, not a layout-index path, so this stays correct regardless
+  ;; of how many entries "Edit" itself ends up with) -- one more line in
+  ;; that column, rather than a third column of its own.
+  (transient-append-suffix 'shexc-ts-mode-menu 'shexc-ts-mode-set-prefix-map
+    '("v" shexc-ts-mode-convert-menu
       :description
       (lambda () (shexc-ts-mode--menu-desc
-                  "Cycle ShExC -> ShExJ -> ShExR -> ShExC"
-                  'shexc-ts-mode-convert-at-point)))
-     ("j" shexc-ts-mode-convert-to-shexj
-      :description
-      (lambda () (shexc-ts-mode--menu-desc
-                  "Convert to ShExJ" 'shexc-ts-mode-convert-to-shexj)))
-     ("r" shexc-ts-mode-convert-to-shexr
-      :description
-      (lambda () (shexc-ts-mode--menu-desc
-                  "Convert to ShExR (Turtle)" 'shexc-ts-mode-convert-to-shexr)))
-     ("b" shexc-ts-mode-convert-fence-to-shexc
-      :description
-      (lambda () (shexc-ts-mode--menu-desc
-                  "Convert fence back to ShExC" 'shexc-ts-mode-convert-fence-to-shexc)))]))
+                  "Convert to ShExJ/ShExR..." 'shexc-ts-mode-convert-at-point)))))
 
 ;; ---------------------------------------------------------------------
 ;; Flymake: flag a fence that doesn't parse, or whose markers don't match
