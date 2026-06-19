@@ -2126,40 +2126,66 @@ For use as a `transient' suffix description."
         (format "%-36s %s" label (key-description key))
       label)))
 
+(transient-define-prefix shexc-ts-mode-highlight-menu ()
+  "Persistent submenu of `shexc-ts-mode-highlight-reachable-mode' options.
+
+Unlike a normal `shexc-ts-mode-menu' suffix (which exits the menu after
+one selection), every toggle here is `:transient t', so the menu stays
+open across multiple selections -- flip several options in a row and
+watch the buffer's highlighting update live after each one, rather
+than reopening the menu (`C-c C-c') between every toggle.  \"q\" exits
+all the way back to normal editing (not just back to
+`shexc-ts-mode-menu', the way `C-g'/`ESC' would -- see
+`transient-quit-all')."
+  ["Highlighting"
+   ("l" shexc-ts-mode-highlight-reachable-mode
+    :transient t
+    :description
+    (lambda ()
+      (shexc-ts-mode--menu-desc
+       (format "Toggle highlighting on/off [%s]"
+               (if shexc-ts-mode-highlight-reachable-mode "ON" "off"))
+       'shexc-ts-mode-highlight-reachable-mode)))
+   ("h" shexc-ts-mode-toggle-highlight-reachable-current
+    :transient t
+    :description
+    (lambda ()
+      (format "Highlight current shape (under cursor) [%s]"
+              (if shexc-ts-mode-highlight-reachable-include-current "X" " "))))
+   ("e" shexc-ts-mode-toggle-highlight-reachable-non-extended
+    :transient t
+    :description
+    (lambda ()
+      (format "Highlight shapes reachable from current shape [%s]"
+              (if shexc-ts-mode-highlight-reachable-include-non-extended "X" " "))))
+   ("x" shexc-ts-mode-toggle-highlight-reachable-extended
+    :transient t
+    :description
+    (lambda ()
+      (format "Highlight shapes extended by current shape [%s]"
+              (if shexc-ts-mode-highlight-reachable-include-extended "X" " "))))
+   ("t" shexc-ts-mode-toggle-highlight-reachable-extends-trumps-reachable
+    :transient t
+    :description
+    (lambda ()
+      (format "Extends trumps reachable [%s]"
+              (if shexc-ts-mode-highlight-reachable-extends-trumps-reachable "X" " "))))
+   ("p" shexc-ts-mode-toggle-highlight-reachable-predicates
+    :transient t
+    :description
+    (lambda ()
+      (format "Highlight predicates of highlighted shapes [%s]"
+              (if shexc-ts-mode-highlight-reachable-include-predicates "X" " "))))
+   ("q" "Done" transient-quit-all)])
+
 (transient-define-prefix shexc-ts-mode-menu ()
   "Feature menu for `shexc-ts-mode', showing live keybindings."
   [["Navigate"
-    (:info
-     (lambda ()
-       (shexc-ts-mode--menu-desc
-        (format "Toggle highlighting on/off [%s]"
-                (if shexc-ts-mode-highlight-reachable-mode "ON" "off"))
-        'shexc-ts-mode-highlight-reachable-mode)))
-    ("h" shexc-ts-mode-toggle-highlight-reachable-current
+    ("h" shexc-ts-mode-highlight-menu
      :description
      (lambda ()
-       (format "Highlight current shape (under cursor) [%s]"
-               (if shexc-ts-mode-highlight-reachable-include-current "X" " "))))
-    ("e" shexc-ts-mode-toggle-highlight-reachable-non-extended
-     :description
-     (lambda ()
-       (format "Highlight shapes reachable from current shape [%s]"
-               (if shexc-ts-mode-highlight-reachable-include-non-extended "X" " "))))
-    ("x" shexc-ts-mode-toggle-highlight-reachable-extended
-     :description
-     (lambda ()
-       (format "Highlight shapes extended by current shape [%s]"
-               (if shexc-ts-mode-highlight-reachable-include-extended "X" " "))))
-    ("t" shexc-ts-mode-toggle-highlight-reachable-extends-trumps-reachable
-     :description
-     (lambda ()
-       (format "Extends trumps reachable [%s]"
-               (if shexc-ts-mode-highlight-reachable-extends-trumps-reachable "X" " "))))
-    ("p" shexc-ts-mode-toggle-highlight-reachable-predicates
-     :description
-     (lambda ()
-       (format "Highlight predicates of highlighted shapes [%s]"
-               (if shexc-ts-mode-highlight-reachable-include-predicates "X" " "))))
+       (format "Highlighting options...      [%s]"
+               (if shexc-ts-mode-highlight-reachable-mode "ON" "off"))))
     ("f" shexc-ts-mode-toggle-fold
      :description
      (lambda () (shexc-ts-mode--menu-desc

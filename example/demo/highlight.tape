@@ -64,42 +64,26 @@ Ctrl+c
 Ctrl+l
 Sleep 1500ms
 
-# Iterate through each highlight-reachable toggle, rendering after each.
+# Open the highlighting submenu ("h") and iterate through each
+# reachable-shape toggle.  Unlike a plain menu entry, this submenu is
+# `:transient t' -- it stays open across every keystroke below instead
+# of exiting (and needing to be reopened) after each toggle.
 Ctrl+c
 Ctrl+c
 Sleep 1s
 Type "h"
-Hide
-
-Ctrl+c
-Ctrl+c
-Show
+Sleep 1500ms
+Type "h"
 Sleep 1500ms
 Type "x"
-Hide
-
-Ctrl+c
-Ctrl+c
-Show
 Sleep 1500ms
 Type "e"
-Hide
-
-Ctrl+c
-Ctrl+c
-Show
 Sleep 1500ms
 Type "t"
-Hide
-
-Ctrl+c
-Ctrl+c
-Show
 Sleep 1500ms
 Type "p"
-Hide
+Sleep 1500ms
 
-Ctrl+c
-Ctrl+c
-Show
+# Dismiss the submenu and the whole menu stack in one go.
+Type "q"
 Sleep 1500ms

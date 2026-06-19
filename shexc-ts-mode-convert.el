@@ -595,7 +595,8 @@ back to ShExC, closing the loop."
      (t (shexc-ts-mode-convert-fence-to-shexc)))))
 
 ;;;###autoload
-(define-key shexc-ts-mode-map (kbd "C-c C-v") #'shexc-ts-mode-convert-at-point)
+(with-eval-after-load 'shexc-ts-mode
+  (define-key shexc-ts-mode-map (kbd "C-c C-v") #'shexc-ts-mode-convert-at-point))
 
 (with-eval-after-load 'transient
   ;; LOC '(0 1) -- shexc-ts-mode-menu's whole `[[...]["Edit"...]]' body is
