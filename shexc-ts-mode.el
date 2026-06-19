@@ -2177,12 +2177,15 @@ REPORT-FN is Flymake's callback; see `flymake-diagnostic-functions'."
 
 ;;; Feature menu (transient)
 
-(defun shexc-ts-mode--menu-desc (label command)
+(defun shexc-ts-mode--menu-desc (label command &optional width)
   "Return LABEL annotated with COMMAND's key binding in `shexc-ts-mode-map'.
-For use as a `transient' suffix description."
+LABEL is left-justified to WIDTH (default 36) before the key binding,
+so that bindings line up within a single `transient' column; callers
+sharing a column should pass the same WIDTH.  For use as a `transient'
+suffix description."
   (let ((key (where-is-internal command shexc-ts-mode-map t)))
     (if key
-        (format "%-36s %s" label (key-description key))
+        (format (format "%%-%ds %%s" (or width 36)) label (key-description key))
       label)))
 
 (transient-define-prefix shexc-ts-mode-highlight-menu ()
@@ -2264,41 +2267,41 @@ the \"Edit\" column), the same way `shexc-ts-mode-convert-menu' is."
     ("h" shexc-ts-mode-highlight-menu
      :description
      (lambda ()
-       (format "Highlighting options...      [%s]"
+       (format "Highlighting options...    [%s]"
                (if shexc-ts-mode-highlight-reachable-mode "ON" "off"))))
     ("f" shexc-ts-mode-toggle-fold
      :description
      (lambda () (shexc-ts-mode--menu-desc
-                 "Fold/unfold shape body at point"
-                 'shexc-ts-mode-toggle-fold)))
-    (:info "C-M-a / C-M-e    Previous/next shape declaration")
-    (:info "C-M-f / C-M-b    Forward/backward over a shape branch")
-    (:info "M-. / M-, / M-?  Go to / pop back from / find refs to shape")]
+                 "Fold/unfold shape body"
+                 'shexc-ts-mode-toggle-fold 24)))
+    (:info "C-M-a / C-M-e    Prev/next shape")
+    (:info "C-M-f / C-M-b    Forward/back expr")
+    (:info "M-. / M-, / M-?  push/pop/refs to")]
    ["Edit"
     ("u" shexc-ts-mode-unwrap-shape
      :description
      (lambda () (shexc-ts-mode--menu-desc
-                 "Unwrap `<predicate> { ... }' shape"
-                 'shexc-ts-mode-unwrap-shape)))
+                 "Unwrap `<predicate> { ... }'"
+                 'shexc-ts-mode-unwrap-shape 29)))
     ("w" shexc-ts-mode-wrap-in-shape
      :description
      (lambda () (shexc-ts-mode--menu-desc
-                 "Wrap region in `<predicate> { ... }'"
-                 'shexc-ts-mode-wrap-in-shape)))
+                 "Wrap in `<predicate> { ... }'"
+                 'shexc-ts-mode-wrap-in-shape 29)))
     ("r" shexc-ts-mode-rename-shape
      :description
      (lambda () (shexc-ts-mode--menu-desc
-                 "Rename shape label everywhere"
-                 'shexc-ts-mode-rename-shape)))
+                 "Rename shape label refs"
+                 'shexc-ts-mode-rename-shape 29)))
     ("k" shexc-ts-mode-toggle-comment-style
      :description
      (lambda () (shexc-ts-mode--menu-desc
-                 "Toggle `#' / `/* */' comment style"
-                 'shexc-ts-mode-toggle-comment-style)))
+                 "`#' / `/* */' comment style"
+                 'shexc-ts-mode-toggle-comment-style 29)))
     ("p" shexc-ts-mode-prefix-menu
      :description
      (lambda ()
-       (format "Prefix map options...        (%s)"
+       (format "Prefix map options...         (%s)"
                (shexc-ts-mode--prefix-map-names-string))))]])
 
 ;;; Major mode
