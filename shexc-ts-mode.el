@@ -2,7 +2,7 @@
 
 ;; Author: Eric Prud'hommeaux <eric@w3.org>
 ;; Assisted-by: Claude:claude-sonnet-4-6
-;; Version: 0.1.0
+;; Version: 3.0.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: languages
 ;; URL: https://github.com/ericprud/shexc-mode-for-emacs
