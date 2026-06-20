@@ -71,13 +71,18 @@
 ;; `treesit-install-language-grammar' generally) to build the
 ;; `tree-sitter-shexc' grammar; see the Setup section in the README.
 ;;
-;; Pinned to a commit whose parser.c targets ABI 14 (LANGUAGE_VERSION 14),
-;; compatible with Emacs 29.1+ and Emacs 30+.  ABI 14 is backward-compatible
-;; with Emacs 30, so no version-based switching is needed: updating this pin
-;; is the only change required if a future grammar version ever needs ABI 15.
+;; Pinned to the `v0.2.0' tag, not a raw commit SHA:
+;; `treesit-install-language-grammar' clones with `git clone ... -b
+;; REVISION', and `-b' only accepts a branch/tag name -- a raw SHA
+;; fails with "Remote branch ... not found in upstream origin"
+;; (confirmed empirically).  `v0.2.0' targets ABI 14 (LANGUAGE_VERSION
+;; 14), compatible with Emacs 29.1+ and Emacs 30+.  ABI 14 is
+;; backward-compatible with Emacs 30, so no version-based switching is
+;; needed: updating this pin is the only change required if a future
+;; grammar version ever needs ABI 15.
 (add-to-list 'treesit-language-source-alist
              '(shexc "https://github.com/ericprud/tree-sitter-shexc"
-                     "83a6fb833e7d6e8cb05f594cd83913c51e5ac0a4"))
+                     "v0.2.0"))
 
 ;;;###autoload
 (defun shexc-ts-mode-install-grammar ()
