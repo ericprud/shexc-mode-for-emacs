@@ -261,6 +261,36 @@ If INCLUDE-NODE is non-nil, NODE itself is considered first."
                     (rdf-ts-base-xref-make node)))
                 nodes)))
 
+;;; Syntax-propertize helper
+;;
+;; Both Turtle and ShExC reuse `#' as a line-comment starter *and* allow
+;; it to appear literally inside a `<...>' IRIREF (a fragment separator,
+;; e.g. `<http://example.org/onto#Class>') -- a plain syntax table can't
+;; tell those two roles apart, which otherwise makes syntax-based
+;; scanning (`forward-list'/`up-list'/...) believe a bracket later on
+;; the same line is "inside a comment".
+
+(defun rdf-ts-base-neutralize-comment-char-in-iri (char beg end)
+  "Give CHAR a neutral `syntax-table' property wherever it falls inside
+a `<...>' IRIREF between BEG and END, so syntax-based scanning doesn't
+mistake it for a comment-starter there.  Intended as (part of) a
+mode's `syntax-propertize-function', with CHAR bound to whichever
+character that mode's syntax table marks `<' b' (e.g. `?#').
+
+CHAR is considered to be inside an IRIREF (and therefore not a comment
+starter) when scanning backward to the beginning of the line finds an
+unmatched `<' before any `>'."
+  (goto-char beg)
+  (while (re-search-forward (regexp-quote (char-to-string char)) end t)
+    (let ((pos (match-beginning 0)))
+      (when (save-excursion
+              (let ((bol (line-beginning-position)))
+                (and (re-search-backward "<" bol t)
+                     (not (re-search-forward ">" pos t)))))
+        (with-silent-modifications
+          (put-text-property pos (1+ pos)
+                              'syntax-table (string-to-syntax "_")))))))
+
 (provide 'rdf-ts-base)
 
 ;;; rdf-ts-base.el ends here
