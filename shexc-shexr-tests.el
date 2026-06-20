@@ -42,7 +42,7 @@
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
             "  sx:shapeExpr [\n"
             "    a sx:NodeConstraint ;\n"
-            "    sx:datatype [ a sx:Ref ; sx:id <http://a.example/dt> ] ;\n"
+            "    sx:datatype <http://a.example/dt> ;\n"
             "    sx:nodeKind \"iri\"\n"
             "  ] .\n"))))
 
@@ -89,10 +89,10 @@ and a Wildcard-stem IriStemRange."
             "    sx:values (\n"
             "      <http://a.example/v1>\n"
             "      true\n"
-            "      [ a sx:IriStem ; sx:stem [ a sx:Ref ; sx:id <http://a.example/#> ] ]\n"
+            "      [ a sx:IriStem ; sx:stem \"http://a.example/#\" ]\n"
             "      [\n"
             "        a sx:IriStemRange ;\n"
-            "        sx:exclusions ([ a sx:Ref ; sx:id <http://a.example/#x> ]) ;\n"
+            "        sx:exclusion (<http://a.example/#x>) ;\n"
             "        sx:stem [ a sx:Wildcard ]\n"
             "      ]\n"
             "    )\n"
@@ -116,7 +116,7 @@ IRI references -- unlike the structurally identical IriStemRange."
             "  sx:shapeExpr [\n"
             "    a sx:NodeConstraint ;\n"
             "    sx:values (\n"
-            "      [ a sx:LiteralStemRange ; sx:exclusions (\"abcdef\") ; sx:stem \"abc\" ]\n"
+            "      [ a sx:LiteralStemRange ; sx:exclusion (\"abcdef\") ; sx:stem \"abc\" ]\n"
             "    )\n"
             "  ] .\n"))))
 
@@ -145,10 +145,7 @@ two reference *forms* differ even though they point at the same IRI."
             "  sx:shapeExpr [ a sx:Shape ; sx:expression <http://a.example/E1> ] .\n"
             "\n<http://a.example/E1> a sx:EachOf ;\n"
             "  sx:expressions (\n"
-            "    [\n"
-            "      a sx:TripleConstraint ;\n"
-            "      sx:predicate [ a sx:Ref ; sx:id <http://a.example/p1> ]\n"
-            "    ]\n"
+            "    [ a sx:TripleConstraint ; sx:predicate <http://a.example/p1> ]\n"
             "    [ a sx:Ref ; sx:id <http://a.example/E1> ]\n"
             "  ) .\n"))))
 
@@ -160,7 +157,10 @@ ShapeDecl is independently hoisted to its own top-level statement (it
 always carries an :id), so a naked `<IRI>' here would be
 indistinguishable from a reference to *that* hoisted statement, which
 must be dereferenced/embedded rather than kept as the bare string it
-actually is in the value-tree."
+actually is in the value-tree.  `:predicate' has no such ambiguity (see
+`shexc-shexr--key-string-mode') and is exercised here unwrapped, right
+next to `:valueExpr' wrapped, specifically to show the two don't get
+conflated."
   (should (equal
            (shexc-shexr-serialize
             '(:type "Schema" :shapes
@@ -176,7 +176,7 @@ actually is in the value-tree."
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
             "  sx:shapeExpr [\n"
             "    a sx:TripleConstraint ;\n"
-            "    sx:predicate [ a sx:Ref ; sx:id <http://a.example/p1> ] ;\n"
+            "    sx:predicate <http://a.example/p1> ;\n"
             "    sx:valueExpr [ a sx:Ref ; sx:id <http://a.example/S2> ]\n"
             "  ] .\n"
             "\n<http://a.example/S2> a sx:ShapeDecl ;\n"

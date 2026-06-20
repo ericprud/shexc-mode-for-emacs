@@ -45,11 +45,24 @@
 ;;   inverse booleans, which are always Lisp `t' in the value-tree), which
 ;;   use Turtle's native `true'/`false' keyword.
 ;; - Most string-valued properties are IRI/blank-node-label references
-;;   (`predicate', `datatype', value-set bare-string entries, ...); a
+;;   (value-set bare-string entries, a shape-ref `valueExpr', ...); a
 ;;   fixed few are plain Turtle string literals instead (`code', `pattern',
-;;   `flags', `languageTag', `nodeKind'), and `stem'/`exclusions' switch
+;;   `flags', `languageTag', `nodeKind', `stem'), and `exclusions' switches
 ;;   between the two depending on the enclosing node's `:type' (Iri* are
 ;;   IRIs, Literal*/Language* are plain text).
+;; - `predicate'/`datatype'/Iri-flavored `exclusions' entries are *always*
+;;   a bare `<iri>'/`_:label', never wrapped in `sx:Ref' -- per
+;;   ShExR.shex, `sx:predicate'/`sx:datatype' are typed plain `IRI', with
+;;   no object alternative, so there's no same-document-hoisted-object
+;;   ambiguity to guard against for them (see `shexc-shexr--key-string-mode').
+;;   A handful of other string-valued properties (`valueExpr'/`shapeExpr'/
+;;   `expression(s)'/`shapeExprs'/`extends') genuinely can coincide with a
+;;   same-document hoisted object's id and so still go through the
+;;   `sx:Ref'-wrapping scheme described at `shexc-shexr--key-string-mode'
+;;   and the narrow parser's Commentary below -- non-canonical relative to
+;;   ShExR.shex for *those* properties specifically, pending a
+;;   semantic-equivalence (rather than structural-equality) round-trip
+;;   comparison that would let them drop the wrapper too.
 
 ;;; Code:
 
@@ -70,9 +83,12 @@ purely a canonical-shape convention of this bespoke serializer, so the
 narrow parser can rely on a predictable position.")
 
 (defconst shexc-shexr--plain-text-keys
-  '(:code :pattern :flags :languageTag :nodeKind)
+  '(:code :pattern :flags :languageTag :nodeKind :stem)
   "Property keys whose string value is canonical plain text (a Turtle
-string literal), never an IRI/blank-node-label reference.")
+string literal), never an IRI/blank-node-label reference.  `:stem' is
+here unconditionally -- per ShExR.shex, `sx:stem' is plain `xsd:string'
+for every stem flavor (Iri/Literal/Language alike); only `:exclusions'
+entries actually vary by flavor (see `shexc-shexr--plain-text-types').")
 
 (defconst shexc-shexr--fill-column 80
   "A nested `[ ... ]'/`( ... )' pair is kept on one line if it fits within
@@ -251,31 +267,34 @@ active and matches, not on anything visible at the call site."
 
 (defconst shexc-shexr--plain-text-types
   '("LiteralStem" "LiteralStemRange" "LanguageStem" "LanguageStemRange")
-  "Types whose `:stem'/bare `:exclusions' entries are plain text, not
-IRIs -- the complement (Iri*) uses IRI references instead.")
+  "Types whose bare `:exclusions' entries are plain text, not IRIs -- the
+complement (Iri*) uses IRI references instead.  (Unlike `:exclusions',
+`:stem' itself is plain text regardless of type -- see
+`shexc-shexr--plain-text-keys'.)")
 
 (defun shexc-shexr--key-string-mode (type key)
   "How a bare-string value of KEY (within a node of :type TYPE) should be
 rendered: `plain' for a Turtle string literal, `value' for a value-set/
 Annotation-object entry (bare IRI, or a literal -- see
-`shexc-shexr--parse-value-set-entry'), `ref' (the default) for a
-wrapped `sx:Ref' id-reference.
+`shexc-shexr--parse-value-set-entry'), `literal-iri' for a bare
+`<iri>'/`_:label' that's *never* a same-document-hoisted-object
+reference (so the narrow parser must read it as a plain string, never
+consulting the hoist table -- see `shexc-shexr--parse-rdf-value'),
+`ref' (the default) for a wrapped `sx:Ref' id-reference.
 
-`ref' wraps *every* other bare string, with no per-key exceptions,
-rather than trying to enumerate exactly which ShExJ properties can
-coincide with a same-document hoisted object's id (`:valueExpr'/
-`:shapeExpr'/`:expression(s)' obviously can, since ShExJ's
-shapeExprOrRef/tripleExprOrRef union types allow it deliberately -- but
-so, empirically, can `:extends' and even `:datatype', confirmed via
-kitchenSink.shex and _all.shex respectively).  A naked `<IRI>'/
-`_:label' is reserved exclusively for \"dereference the matching
-hoisted statement\" (see `shexc-shexr--resolve'); since that can never
-be conflated with a real bare-string ShExJ value once *every* such
-value is wrapped, there's no remaining enumeration to get wrong."
+`:predicate'/`:datatype' are always `literal-iri': ShExR.shex types
+both as plain `IRI', with no shapeExpr/ShapeDecl alternative, so unlike
+`:valueExpr'/`:shapeExpr'/`:expression(s)'/`:shapeExprs'/`:extends'
+\(whose union types deliberately allow a same-document hoisted object's
+id to appear there -- confirmed empirically via kitchenSink.shex and
+_all.shex) there's no real ambiguity for `ref''s `sx:Ref' wrapping to
+guard against; wrapping them anyway would also be non-conformant
+\(`sx:predicate'/`sx:datatype' must be a bare IRI per ShExR.shex)."
   (cond
    ((memq key shexc-shexr--plain-text-keys) 'plain)
-   ((memq key '(:stem :exclusions))
-    (if (member type shexc-shexr--plain-text-types) 'plain 'ref))
+   ((eq key :exclusions)
+    (if (member type shexc-shexr--plain-text-types) 'plain 'literal-iri))
+   ((memq key '(:predicate :datatype)) 'literal-iri)
    ((memq key '(:values :object)) 'value)
    (t 'ref)))
 
@@ -284,12 +303,34 @@ value is wrapped, there's no remaining enumeration to get wrong."
 ;; ---------------------------------------------------------------------
 
 (defun shexc-shexr--serialize-ref (id)
-  "A bare ShExJ string VALUE (shape-ref/Include/Schema:start/:extends/
-:datatype/..., not a reference to a same-document hoisted object) --
-wrapped in `sx:Ref' rather than emitted as a naked `<IRI>'/`_:label', so
-the parser can always tell the two apart syntactically.  See
-`shexc-shexr--key-string-mode' for why this disambiguation is needed."
+  "A bare ShExJ string VALUE (shape-ref/Include/Schema:start/:extends/...,
+not a reference to a same-document hoisted object) -- wrapped in
+`sx:Ref' rather than emitted as a naked `<IRI>'/`_:label', so the parser
+can always tell the two apart syntactically.  See
+`shexc-shexr--key-string-mode' for why this disambiguation is needed --
+and why `:predicate'/`:datatype'/Iri-flavored `:exclusions' (`literal-iri'
+mode) never reach this function at all, unlike everything else listed
+above."
   (concat "[ a sx:Ref ; sx:id " (shexc-shexr--ref-text id) " ]"))
+
+(defconst shexc-shexr--key-name-overrides
+  '((:exclusions . "exclusion") (:annotations . "annotation"))
+  "ShExJ property keys whose RDF predicate local name isn't simply the
+keyword name verbatim: ShExR.shex uses the singular `sx:exclusion'/
+`sx:annotation' (an RDF list can hold any number of values under one
+singular-named predicate) even though the ShExJ/JSON key -- and this
+value-tree's plist key -- is plural `:exclusions'/`:annotations'.")
+
+(defun shexc-shexr--key-label (key)
+  "KEY's `sx:Name ' property label, honoring `shexc-shexr--key-name-overrides'."
+  (concat "sx:" (or (cdr (assq key shexc-shexr--key-name-overrides))
+                     (substring (symbol-name key) 1))
+          " "))
+
+(defun shexc-shexr--key-from-label-name (name)
+  "Inverse of `shexc-shexr--key-label' for a parsed `sx:Name' local NAME."
+  (or (car (rassoc name shexc-shexr--key-name-overrides))
+      (intern (concat ":" name))))
 
 (defun shexc-shexr--sort-keys (keys)
   "KEYS in canonical order: alphabetical, with the \"big nested\"
@@ -398,7 +439,8 @@ with no further decoration wrapped around it."
 (defun shexc-shexr--flat-value (v &optional string-mode)
   "STRING-MODE, when V is a bare string, selects how to render it: `plain'
 for a Turtle string literal, `value' for a value-set/Annotation-object
-entry, `ref' (the default) for a wrapped `sx:Ref' id-reference -- see
+entry, `ref' for a wrapped `sx:Ref' id-reference, anything else
+\(including `literal-iri', the default) a bare `<iri>'/`_:label' -- see
 `shexc-shexr--key-string-mode'."
   (cond
    ((eq v t) (shexc-shexr--lit "true"))
@@ -426,7 +468,7 @@ entry, `ref' (the default) for a wrapped `sx:Ref' id-reference -- see
    (t (error "shexc-shexr: cannot serialize value %S" v))))
 
 (defun shexc-shexr--flat-prop (type key value)
-  (let ((label (concat "sx:" (substring (symbol-name key) 1) " ")))
+  (let ((label (shexc-shexr--key-label key)))
     (if (eq key :extra)
         (shexc-shexr--cat
          (shexc-shexr--lit label)
@@ -524,7 +566,7 @@ would get."
    (t (error "shexc-shexr: cannot serialize value %S" v))))
 
 (defun shexc-shexr--pretty-prop (type key value indent width)
-  (let ((label (concat "sx:" (substring (symbol-name key) 1) " ")))
+  (let ((label (shexc-shexr--key-label key)))
     (if (eq key :extra)
         (shexc-shexr--cat
          (shexc-shexr--lit label)
@@ -624,24 +666,36 @@ treats as a locatable target, or it simply isn't part of SCHEMA)."
 ;; matching top-level hoisted statement, `:id' restored.
 ;;
 ;; By construction (see `shexc-shexr--key-string-mode'), a naked
-;; `<IRI>'/`_:label' VALUE-position token can *only* come from the
-;; serializer's object branch (`shexc-shexr--serialize-value's
-;; `(plist-get v :id)' check) -- which is also exactly what triggers
-;; hoisting that object to its own top-level statement in the first
-;; place -- so a deferred marker is guaranteed to find a match.  Every
-;; bare *string* ShExJ value (`:predicate', `:datatype', a shape-ref
-;; `:valueExpr', an `:extends' target, an Include element, ...) is
-;; instead always wrapped in `sx:Ref' at serialize time and unwrapped
-;; straight back to that string in `shexc-shexr--parse-inline-object',
-;; bypassing the deferred-marker/hoist-table machinery entirely -- so it
-;; can never be mistaken for an object reference, regardless of whether
-;; that same IRI also happens to be hoisted elsewhere (a real
-;; possibility: kitchenSink.shex's `ex:reportedBy IRI @UserShape:' and
-;; _all.shex's reuse of "IRI" as both a ShapeDecl id and a `:datatype'
-;; value both demonstrate this isn't just theoretical).  `resolve''s
-;; fallback to a bare string when no hoisted statement matches is
-;; consequently dead code for machine-generated input, kept only as a
-;; graceful-degradation safety net for hand-edited fenced ShExR text.
+;; `<IRI>'/`_:label' VALUE-position token reached via the default `ref'
+;; dispatch can come either from the serializer's object branch
+;; (`shexc-shexr--flat-value's `(plist-get v :id)' check) -- which is
+;; also exactly what triggers hoisting that object to its own top-level
+;; statement in the first place, so a deferred marker is guaranteed to
+;; find a match there -- or from a bare *string* ShExJ value at one of
+;; the few properties whose ShExJ union type genuinely allows it to
+;; coincide with a same-document hoisted object's id (a shape-ref
+;; `:valueExpr'/`:shapeExpr', an `:expression(s)'/`:shapeExprs'/
+;; `:extends' member, an Include element, ...).  That second case is
+;; wrapped in `sx:Ref' at serialize time and unwrapped straight back to
+;; the bare string in `shexc-shexr--parse-inline-object', bypassing the
+;; deferred-marker/hoist-table machinery entirely -- not RDF-conformant
+;; (ShExR.shex has no `sx:Ref' class), kept only until a
+;; semantic-equivalence round-trip comparison removes the need for it.
+;;
+;; `:predicate'/`:datatype'/Iri-flavored `:exclusions' (`literal-iri'
+;; mode, see `shexc-shexr--key-string-mode') are a *third*, simpler
+;; case: ShExR.shex types them as plain `IRI', with no object
+;; alternative at all, so `shexc-shexr--parse-rdf-value' resolves them
+;; immediately to a plain string, the same way `plain'/`value' mode do
+;; -- never deferred, regardless of whether that same IRI also happens
+;; to be hoisted elsewhere (a real possibility: kitchenSink.shex's
+;; `ex:reportedBy IRI @UserShape:' and _all.shex's reuse of "IRI" as
+;; both a ShapeDecl id and a `:datatype' value both demonstrate this
+;; isn't just theoretical) -- consulting the hoist table for these could
+;; only produce a wrong answer, never a right one.  `resolve''s fallback
+;; to a bare string when no hoisted statement matches remains dead code
+;; for machine-generated input on the `ref'-mode path above, kept only
+;; as a graceful-degradation safety net for hand-edited fenced ShExR text.
 
 (define-error 'shexc-shexr-parse-error "ShExR parse error")
 
@@ -816,13 +870,19 @@ value-set literal entry, returned as a `:value'/`:type'/`:language' plist."
 (defun shexc-shexr--parse-rdf-value (&optional mode)
   "Parse one value at point.  MODE mirrors
 `shexc-shexr--key-string-mode': `value' for a NodeConstraint value-set/
-Annotation-object entry, `plain' for plain text, anything else
-(including the usual `ref') falls through to the default dispatch --
-inline objects, RDF lists, numbers, and booleans are recognized by
-their own syntax regardless of MODE, and a bare `\"...\"' token never
-needs to be expected here at all (every property whose value could
-syntactically be a quoted string uses `plain' or `value' mode; see
-`shexc-shexr--key-string-mode')."
+Annotation-object entry, `plain' for plain text, `literal-iri' for a
+bare `<iri>'/`_:label' resolved immediately to a plain string -- never
+deferred against the hoist table, since (per `shexc-shexr--key-string-mode')
+a `literal-iri' property can never hold a same-document-hoisted-object
+reference, so consulting the hoist table could only go wrong (e.g. the
+IRI happens to coincide with an unrelated hoisted statement's id) --
+anything else (including the usual `ref') falls through to the default
+dispatch, which always defers a bare `<iri>'/`_:label' against the
+hoist table (see `shexc-shexr--resolve').  Inline objects, RDF lists,
+numbers, and booleans are recognized by their own syntax regardless of
+MODE, and a bare `\"...\"' token never needs to be expected here at all
+\(every property whose value could syntactically be a quoted string
+uses `plain' or `value' mode; see `shexc-shexr--key-string-mode')."
   (shexc-shexr--skip-ws)
   (cond
    ((looking-at "\\[") (shexc-shexr--parse-inline-object))
@@ -832,6 +892,8 @@ syntactically be a quoted string uses `plain' or `value' mode; see
    ((looking-at "false\\_>") (goto-char (match-end 0)) nil)
    ((looking-at "-?[0-9]") (shexc-shexr--parse-number-token))
    ((eq mode 'plain) (shexc-shexr--parse-plain-string))
+   ((and (eq mode 'literal-iri) (looking-at shexc-shexr--iri-or-bnode-start-re))
+    (shexc-shexr--parse-iri-or-bnode))
    ((looking-at shexc-shexr--iri-or-bnode-start-re) (shexc-shexr--make-ref (shexc-shexr--parse-iri-or-bnode)))
    (t (shexc-shexr--fail "expected a value"))))
 
@@ -868,7 +930,7 @@ reference markers -- see the Commentary above)."
       (goto-char (1+ (point)))
       (shexc-shexr--skip-ws)
       (let* ((key-name (shexc-shexr--parse-sx-name))
-             (kw (intern (concat ":" key-name))))
+             (kw (shexc-shexr--key-from-label-name key-name)))
         (setq props
               (plist-put props kw
                          (if (string= key-name "extra")
