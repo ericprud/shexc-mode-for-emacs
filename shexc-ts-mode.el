@@ -3,7 +3,7 @@
 ;; Author: Eric Prud'hommeaux <eric@w3.org>
 ;; Assisted-by: Claude:claude-sonnet-4-6
 ;; Version: 3.0.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (rdf-ts-base "0.1.0"))
 ;; Keywords: languages
 ;; URL: https://github.com/ericprud/shexc-mode-for-emacs
 ;; SPDX-License-Identifier: MIT
@@ -53,6 +53,7 @@
 ;; `shexc-shexj.el' has no dependency of its own on `shexc-ts-mode'.
 (require 'shexc-shexj)
 (require 'transient)
+(require 'rdf-ts-base)
 
 (declare-function treesit-parser-create "treesit.c")
 (declare-function treesit-node-type "treesit.c")
@@ -95,31 +96,8 @@ the grammar on another machine and copy the resulting
 (Windows) into the tree-sitter subdirectory of `user-emacs-directory';
 see the shexc-ts-mode README for details."
   (interactive)
-  (unless (executable-find "git")
-    (user-error "Cannot install grammar: `git' not found on `exec-path'"))
-  (unless (seq-find #'executable-find '("cc" "gcc" "c99"))
-    (user-error "Cannot install grammar: no C compiler (cc, gcc, or c99) \
-found on `exec-path'.  Install one, or copy a pre-built \
-libtree-sitter-shexc.so/.dylib into %s -- see the shexc-ts-mode README"
-                (locate-user-emacs-file "tree-sitter")))
-  (treesit-install-language-grammar 'shexc)
-  (pcase (treesit-language-available-p 'shexc t)
-    (`(nil version-mismatch ,ver)
-     (user-error "shexc-ts-mode: grammar ABI version %s is not supported \
-by this Emacs %s (ABI 14 requires Emacs 29.1+).  \
-If a stale .so remains from a previous install, delete %s and try again"
-                 ver emacs-version
-                 (expand-file-name "libtree-sitter-shexc.so"
-                                   (locate-user-emacs-file "tree-sitter"))))
-    (`(nil . ,_)
-     (user-error "shexc-ts-mode: grammar build failed -- \
-check the *Warnings* buffer for details, or copy a pre-built \
-libtree-sitter-shexc.so/.dylib into %s"
-                 (locate-user-emacs-file "tree-sitter")))
-    (_
-     (add-to-list 'auto-mode-alist '("\\.shexc?\\'" . shexc-ts-mode))
-     (message "shexc-ts-mode: grammar installed; \
-`.shex'/`.shexc' files now use `shexc-ts-mode'"))))
+  (rdf-ts-base-install-grammar
+   'shexc "tree-sitter-shexc" 14 'shexc-ts-mode "\\.shexc?\\'"))
 
 (defgroup shexc-ts nil
   "Major mode for editing ShExC documents with tree-sitter."
@@ -150,106 +128,9 @@ libtree-sitter-shexc.so/.dylib into %s"
 ;; `shex:') take precedence without needing to fork or edit "rdfa"
 ;; itself.
 
-(defconst shexc-ts-mode--prefix-map-rdfa
-  '(:source "https://www.w3.org/2011/rdfa-context/rdfa-1.1"
-    :description
-    "W3C RDFa Core 1.1 Initial Context: the default vocabulary prefixes \
-recognized by RDFa processors, combining the W3C's own vocabularies \
-with other widely-used ones (Dublin Core, FOAF, schema.org, etc.)."
-    :prefixes
-    (("as" . "https://www.w3.org/ns/activitystreams#")
-     ("cc" . "http://creativecommons.org/ns#")
-     ("csvw" . "http://www.w3.org/ns/csvw#")
-     ("ctag" . "http://commontag.org/ns#")
-     ("dc" . "http://purl.org/dc/terms/")
-     ("dc11" . "http://purl.org/dc/elements/1.1/")
-     ("dcat" . "http://www.w3.org/ns/dcat#")
-     ("dcterms" . "http://purl.org/dc/terms/")
-     ("dqv" . "http://www.w3.org/ns/dqv#")
-     ("duv" . "https://www.w3.org/ns/duv#")
-     ("foaf" . "http://xmlns.com/foaf/0.1/")
-     ("gr" . "http://purl.org/goodrelations/v1#")
-     ("grddl" . "http://www.w3.org/2003/g/data-view#")
-     ("ical" . "http://www.w3.org/2002/12/cal/icaltzd#")
-     ("jsonld" . "http://www.w3.org/ns/json-ld#")
-     ("ldp" . "http://www.w3.org/ns/ldp#")
-     ("ma" . "http://www.w3.org/ns/ma-ont#")
-     ("oa" . "http://www.w3.org/ns/oa#")
-     ("odrl" . "http://www.w3.org/ns/odrl/2/")
-     ("og" . "http://ogp.me/ns#")
-     ("org" . "http://www.w3.org/ns/org#")
-     ("owl" . "http://www.w3.org/2002/07/owl#")
-     ("prov" . "http://www.w3.org/ns/prov#")
-     ("qb" . "http://purl.org/linked-data/cube#")
-     ("rdf" . "http://www.w3.org/1999/02/22-rdf-syntax-ns#")
-     ("rdfa" . "http://www.w3.org/ns/rdfa#")
-     ("rdfs" . "http://www.w3.org/2000/01/rdf-schema#")
-     ("rev" . "http://purl.org/stuff/rev#")
-     ("rif" . "http://www.w3.org/2007/rif#")
-     ("rr" . "http://www.w3.org/ns/r2rml#")
-     ("schema" . "http://schema.org/")
-     ("sd" . "http://www.w3.org/ns/sparql-service-description#")
-     ("sioc" . "http://rdfs.org/sioc/ns#")
-     ("skos" . "http://www.w3.org/2004/02/skos/core#")
-     ("skosxl" . "http://www.w3.org/2008/05/skos-xl#")
-     ("sosa" . "http://www.w3.org/ns/sosa/")
-     ("ssn" . "http://www.w3.org/ns/ssn/")
-     ("time" . "http://www.w3.org/2006/time#")
-     ("v" . "http://rdf.data-vocabulary.org/#")
-     ("vcard" . "http://www.w3.org/2006/vcard/ns#")
-     ("void" . "http://rdfs.org/ns/void#")
-     ("wdr" . "http://www.w3.org/2007/05/powder#")
-     ("wdrs" . "http://www.w3.org/2007/05/powder-s#")
-     ("xhv" . "http://www.w3.org/1999/xhtml/vocab#")
-     ("xml" . "http://www.w3.org/XML/1998/namespace")
-     ("xsd" . "http://www.w3.org/2001/XMLSchema#")))
-  "Prefix map transcribed from the W3C RDFa Core 1.1 Initial Context.
-See its `:source' for the authoritative, machine-readable (JSON-LD)
-list this was transcribed from.")
-
-(defconst shexc-ts-mode--prefix-map-wikidata
-  '(:source
-    "https://www.mediawiki.org/wiki/Wikibase/Indexing/RDF_Dump_Format"
-    :description
-    "Wikidata has no single canonical prefix-list page; this combines \
-the RDF-dump namespace prefixes documented at its `:source' URL with \
-the PREFIX block conventionally used at the top of Wikidata \
-EntitySchemas, e.g. https://www.wikidata.org/wiki/EntitySchema:E10."
-    :prefixes
-    (("bd" . "http://www.bigdata.com/rdf#")
-     ("geo" . "http://www.opengis.net/ont/geosparql#")
-     ("owl" . "http://www.w3.org/2002/07/owl#")
-     ("p" . "http://www.wikidata.org/prop/")
-     ("pq" . "http://www.wikidata.org/prop/qualifier/")
-     ("pqn" . "http://www.wikidata.org/prop/qualifier/value-normalized/")
-     ("pqv" . "http://www.wikidata.org/prop/qualifier/value/")
-     ("pr" . "http://www.wikidata.org/prop/reference/")
-     ("prn" . "http://www.wikidata.org/prop/reference/value-normalized/")
-     ("prov" . "http://www.w3.org/ns/prov#")
-     ("prv" . "http://www.wikidata.org/prop/reference/value/")
-     ("ps" . "http://www.wikidata.org/prop/statement/")
-     ("psn" . "http://www.wikidata.org/prop/statement/value-normalized/")
-     ("psv" . "http://www.wikidata.org/prop/statement/value/")
-     ("rdf" . "http://www.w3.org/1999/02/22-rdf-syntax-ns#")
-     ("rdfs" . "http://www.w3.org/2000/01/rdf-schema#")
-     ("schema" . "http://schema.org/")
-     ("skos" . "http://www.w3.org/2004/02/skos/core#")
-     ("wd" . "http://www.wikidata.org/entity/")
-     ("wdata" . "https://www.wikidata.org/wiki/Special:EntityData/")
-     ("wdno" . "http://www.wikidata.org/prop/novalue/")
-     ("wdref" . "http://www.wikidata.org/reference/")
-     ("wds" . "http://www.wikidata.org/entity/statement/")
-     ("wdt" . "http://www.wikidata.org/prop/direct/")
-     ("wdtn" . "http://www.wikidata.org/prop/direct-normalized/")
-     ("wdv" . "http://www.wikidata.org/value/")
-     ("wikibase" . "http://wikiba.se/ontology#")
-     ("xsd" . "http://www.w3.org/2001/XMLSchema#")))
-  "Prefix map for Wikidata's RDF/EntitySchema namespaces.
-See `:description' for the (two) sources this was compiled from.")
-
 (defcustom shexc-ts-mode-prefix-maps
-  `(("rdfa" . ,shexc-ts-mode--prefix-map-rdfa)
-    ("wikidata" . ,shexc-ts-mode--prefix-map-wikidata))
+  `(("rdfa" . ,rdf-ts-base-prefix-map-rdfa)
+    ("wikidata" . ,rdf-ts-base-prefix-map-wikidata))
   "Alist of named prefix maps, for `shexc-ts-mode-prefix-map' to select.
 
 Each element is (NAME . PLIST), where NAME is a string (matched
@@ -599,26 +480,6 @@ references (`@<#S>', `EXTENDS @<#S>', `&<#S>', `start = @<#S>')."
   "Return all `shape_expr_label' nodes captured as @label by PATTERN."
   (treesit-query-capture (treesit-buffer-root-node) pattern nil nil t))
 
-(defun shexc-ts-mode--label-line-summary (node)
-  "Return a trimmed one-line summary of the source line containing NODE."
-  (save-excursion
-    (goto-char (treesit-node-start node))
-    (string-trim (buffer-substring-no-properties
-                  (line-beginning-position) (line-end-position)))))
-
-(defun shexc-ts-mode--xref-make (node)
-  "Build an `xref-item' pointing at the shape label NODE."
-  (xref-make (shexc-ts-mode--label-line-summary node)
-             (xref-make-buffer-location (current-buffer) (treesit-node-start node))))
-
-(defun shexc-ts-mode--matching-xrefs (nodes identifier)
-  "Build `xref-item's for the nodes in NODES whose text equals IDENTIFIER."
-  (delq nil
-        (mapcar (lambda (node)
-                  (when (string= (treesit-node-text node t) identifier)
-                    (shexc-ts-mode--xref-make node)))
-                nodes)))
-
 (defun shexc-ts-mode--all-labels ()
   "Return all shape-label nodes in the buffer (declarations and references)."
   (append
@@ -642,14 +503,14 @@ references (`@<#S>', `EXTENDS @<#S>', `&<#S>', `start = @<#S>')."
 
 (cl-defmethod xref-backend-definitions ((_backend (eql shexc-ts-mode)) identifier)
   "Return the `shape_expr_decl' xref defining IDENTIFIER."
-  (shexc-ts-mode--matching-xrefs
+  (rdf-ts-base-matching-xrefs
    (shexc-ts-mode--query-labels
     '((shape_expr_decl label: (shape_expr_label) @label)))
    identifier))
 
 (cl-defmethod xref-backend-references ((_backend (eql shexc-ts-mode)) identifier)
   "Return the `shape_ref' xrefs referencing IDENTIFIER."
-  (shexc-ts-mode--matching-xrefs
+  (rdf-ts-base-matching-xrefs
    (shexc-ts-mode--query-labels
     '((shape_ref label: (shape_expr_label) @label)))
    identifier))
@@ -665,14 +526,6 @@ references (`@<#S>', `EXTENDS @<#S>', `&<#S>', `start = @<#S>')."
 ;;   an AND/OR operand, a NOT-negated shape, a `{ ... }' shape body, a
 ;;   OneOf/EachOf triple-expression group, or a single triple
 ;;   constraint -- as one sexp.
-
-(defun shexc-ts-mode--ancestor-of-type (node types &optional include-node)
-  "Return the closest ancestor of NODE whose type is a member of TYPES.
-If INCLUDE-NODE is non-nil, NODE itself is considered first."
-  (treesit-parent-until
-   node
-   (lambda (n) (member (treesit-node-type n) types))
-   include-node))
 
 (defconst shexc-ts-mode--sexp-node-types
   '(;; shape declarations and references
@@ -1851,7 +1704,7 @@ is the body in question.  Otherwise, if POS is elsewhere in an
 enclosing `shape_expr_decl' -- e.g. on a `<#Shape> EXTENDS
 @<#Other>' header line, before its `{ ... }' body -- fall back to
 that declaration's first `{ ... }'."
-  (if-let* ((def (shexc-ts-mode--ancestor-of-type
+  (if-let* ((def (rdf-ts-base-ancestor-of-type
                    (treesit-node-at pos)
                    '("shape_definition" "inline_shape_definition")
                    t)))
@@ -1930,27 +1783,19 @@ E.g. \"ex\" for both `ex:p1' and `ex:', and \"\" for `:p1'."
 (defun shexc-ts-mode--prefix-map-names ()
   "`shexc-ts-mode-prefix-map' as a list of names, regardless of whether
 that variable currently holds a single string or already a list."
-  (if (listp shexc-ts-mode-prefix-map)
-      shexc-ts-mode-prefix-map
-    (list shexc-ts-mode-prefix-map)))
+  (rdf-ts-base-prefix-map-names shexc-ts-mode-prefix-map))
 
 (defun shexc-ts-mode--prefix-map-names-string ()
   "`shexc-ts-mode--prefix-map-names', joined for display in a message."
-  (mapconcat #'identity (shexc-ts-mode--prefix-map-names) ", "))
+  (rdf-ts-base-prefix-map-names-string shexc-ts-mode-prefix-map))
 
 (defun shexc-ts-mode--prefix-map-lookup (prefix)
   "Return (IRI . MAP-NAME) for PREFIX: each of `shexc-ts-mode-prefix-map's
 named maps (see `shexc-ts-mode--prefix-map-names') is tried in order,
 and MAP-NAME is whichever one first has a matching entry.  Return nil
 if PREFIX is empty or no active map has an entry for it."
-  (unless (string-empty-p prefix)
-    (catch 'shexc-ts-mode--prefix-map-lookup-found
-      (dolist (name (shexc-ts-mode--prefix-map-names))
-        (let* ((map (cdr (assoc name shexc-ts-mode-prefix-maps)))
-               (iri (cdr (assoc prefix (plist-get map :prefixes)))))
-          (when iri
-            (throw 'shexc-ts-mode--prefix-map-lookup-found (cons iri name)))))
-      nil)))
+  (rdf-ts-base-prefix-map-lookup
+   prefix shexc-ts-mode-prefix-maps shexc-ts-mode-prefix-map))
 
 (defun shexc-ts-mode--prefixed-name-at (pos)
   "Return the `prefixed_name' node at POS, or nil if none."
