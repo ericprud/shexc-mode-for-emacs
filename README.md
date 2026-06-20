@@ -1,5 +1,9 @@
 # shexc-mode-for-emacs
 
+[![MELPA](https://melpa.org/packages/shexc-ts-mode-badge.svg)](https://melpa.org/#/shexc-ts-mode)
+[![GitHub release](https://img.shields.io/github/v/release/ericprud/shexc-mode-for-emacs)](https://github.com/ericprud/shexc-mode-for-emacs/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 `shexc-ts-mode` is a tree-sitter-based Emacs major mode (Emacs 29+) for
 editing [ShExC](https://shex.io/shex-semantics/#shexc) (ShEx Compact Syntax)
 documents, built on the grammar at
