@@ -1,4 +1,4 @@
-;;; rdf-ts-base.el --- Shared infrastructure for tree-sitter RDF major modes  -*- lexical-binding: t; -*-
+;;; rdf-core.el --- Shared infrastructure for tree-sitter RDF major modes  -*- lexical-binding: t; -*-
 
 ;; Author: Eric Prud'hommeaux <eric@w3.org>
 ;; Assisted-by: Claude:claude-sonnet-4-6
@@ -49,7 +49,7 @@
 ;; wrapper around this function, which holds the actual (grammar-agnostic)
 ;; build/diagnose logic.
 
-(defun rdf-ts-base-install-grammar (language human-name abi mode file-regexp)
+(defun rdf-core-install-grammar (language human-name abi mode file-regexp)
   "Download and compile the tree-sitter grammar for LANGUAGE.
 
 LANGUAGE must already have an entry in `treesit-language-source-alist'
@@ -101,7 +101,7 @@ buffer for details, or copy a pre-built shared library into %s"
 ;; keep working exactly as before) and calls the lookup functions below
 ;; with those as explicit arguments.
 
-(defconst rdf-ts-base-prefix-map-rdfa
+(defconst rdf-core-prefix-map-rdfa
   '(:source "https://www.w3.org/2011/rdfa-context/rdfa-1.1"
     :description
     "W3C RDFa Core 1.1 Initial Context: the default vocabulary prefixes \
@@ -158,7 +158,7 @@ with other widely-used ones (Dublin Core, FOAF, schema.org, etc.)."
 See its `:source' for the authoritative, machine-readable (JSON-LD)
 list this was transcribed from.")
 
-(defconst rdf-ts-base-prefix-map-wikidata
+(defconst rdf-core-prefix-map-wikidata
   '(:source
     "https://www.mediawiki.org/wiki/Wikibase/Indexing/RDF_Dump_Format"
     :description
@@ -198,34 +198,34 @@ EntitySchemas, e.g. https://www.wikidata.org/wiki/EntitySchema:E10."
   "Prefix map for Wikidata's RDF/EntitySchema namespaces.
 See `:description' for the (two) sources this was compiled from.")
 
-(defun rdf-ts-base-prefix-map-names (active)
+(defun rdf-core-prefix-map-names (active)
   "Normalize ACTIVE (a single map-name string, or already a list of
 them) to a list -- ACTIVE is whatever shape a consuming mode's own
 \"which map(s) are active\" `defcustom' holds."
   (if (listp active) active (list active)))
 
-(defun rdf-ts-base-prefix-map-names-string (active)
-  "`rdf-ts-base-prefix-map-names' on ACTIVE, joined for display."
-  (mapconcat #'identity (rdf-ts-base-prefix-map-names active) ", "))
+(defun rdf-core-prefix-map-names-string (active)
+  "`rdf-core-prefix-map-names' on ACTIVE, joined for display."
+  (mapconcat #'identity (rdf-core-prefix-map-names active) ", "))
 
-(defun rdf-ts-base-prefix-map-lookup (prefix maps active)
+(defun rdf-core-prefix-map-lookup (prefix maps active)
   "Return (IRI . MAP-NAME) for PREFIX within MAPS, an alist of
-\(NAME . PLIST) -- see `rdf-ts-base-prefix-map-rdfa' for PLIST's shape
+\(NAME . PLIST) -- see `rdf-core-prefix-map-rdfa' for PLIST's shape
 \(`:source'/`:description'/`:prefixes') -- trying ACTIVE's named maps
-\(see `rdf-ts-base-prefix-map-names') in order, first match wins.
+\(see `rdf-core-prefix-map-names') in order, first match wins.
 Return nil if PREFIX is empty or no active map has an entry for it."
   (unless (string-empty-p prefix)
-    (catch 'rdf-ts-base-prefix-map-lookup-found
-      (dolist (name (rdf-ts-base-prefix-map-names active))
+    (catch 'rdf-core-prefix-map-lookup-found
+      (dolist (name (rdf-core-prefix-map-names active))
         (let* ((map (cdr (assoc name maps)))
                (iri (cdr (assoc prefix (plist-get map :prefixes)))))
           (when iri
-            (throw 'rdf-ts-base-prefix-map-lookup-found (cons iri name)))))
+            (throw 'rdf-core-prefix-map-lookup-found (cons iri name)))))
       nil)))
 
 ;;; Generic tree-sitter node utilities
 
-(defun rdf-ts-base-ancestor-of-type (node types &optional include-node)
+(defun rdf-core-ancestor-of-type (node types &optional include-node)
   "Return the closest ancestor of NODE whose type is a member of TYPES.
 If INCLUDE-NODE is non-nil, NODE itself is considered first."
   (treesit-parent-until
@@ -241,24 +241,24 @@ If INCLUDE-NODE is non-nil, NODE itself is considered first."
 ;; touches node *types* -- the query that produced NODE/NODES is the
 ;; caller's own grammar-specific code.
 
-(defun rdf-ts-base-node-line-summary (node)
+(defun rdf-core-node-line-summary (node)
   "Return a trimmed one-line summary of the source line containing NODE."
   (save-excursion
     (goto-char (treesit-node-start node))
     (string-trim (buffer-substring-no-properties
                   (line-beginning-position) (line-end-position)))))
 
-(defun rdf-ts-base-xref-make (node)
+(defun rdf-core-xref-make (node)
   "Build an `xref-item' pointing at NODE."
-  (xref-make (rdf-ts-base-node-line-summary node)
+  (xref-make (rdf-core-node-line-summary node)
              (xref-make-buffer-location (current-buffer) (treesit-node-start node))))
 
-(defun rdf-ts-base-matching-xrefs (nodes identifier)
+(defun rdf-core-matching-xrefs (nodes identifier)
   "Build `xref-item's for the nodes in NODES whose text equals IDENTIFIER."
   (delq nil
         (mapcar (lambda (node)
                   (when (string= (treesit-node-text node t) identifier)
-                    (rdf-ts-base-xref-make node)))
+                    (rdf-core-xref-make node)))
                 nodes)))
 
 ;;; Syntax-propertize helper
@@ -270,7 +270,7 @@ If INCLUDE-NODE is non-nil, NODE itself is considered first."
 ;; scanning (`forward-list'/`up-list'/...) believe a bracket later on
 ;; the same line is "inside a comment".
 
-(defun rdf-ts-base-neutralize-comment-char-in-iri (char beg end)
+(defun rdf-core-neutralize-comment-char-in-iri (char beg end)
   "Give CHAR a neutral `syntax-table' property wherever it falls inside
 a `<...>' IRIREF between BEG and END, so syntax-based scanning doesn't
 mistake it for a comment-starter there.  Intended as (part of) a
@@ -291,6 +291,6 @@ unmatched `<' before any `>'."
           (put-text-property pos (1+ pos)
                               'syntax-table (string-to-syntax "_")))))))
 
-(provide 'rdf-ts-base)
+(provide 'rdf-core)
 
-;;; rdf-ts-base.el ends here
+;;; rdf-core.el ends here

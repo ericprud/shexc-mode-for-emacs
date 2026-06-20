@@ -3,7 +3,7 @@
 ;; Author: Eric Prud'hommeaux <eric@w3.org>
 ;; Assisted-by: Claude:claude-sonnet-4-6
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (rdf-ts-base "0.1.0"))
+;; Package-Requires: ((emacs "29.1") (rdf-core "0.1.0"))
 ;; Keywords: languages
 ;; URL: https://github.com/ericprud/shexc-mode-for-emacs
 ;; SPDX-License-Identifier: MIT
@@ -13,7 +13,7 @@
 ;; A tree-sitter based major mode for editing Turtle documents, built
 ;; on the grammar at
 ;; https://github.com/GordianDziwis/tree-sitter-turtle -- and on the
-;; shared infrastructure in `rdf-ts-base.el', first factored out of the
+;; shared infrastructure in `rdf-core.el', first factored out of the
 ;; sibling `shexc-ts-mode' (a major mode for ShEx Compact Syntax, which
 ;; adds shape validation on top of the Turtle/RDF data model this mode
 ;; edits -- see https://github.com/ericprud/shexc-mode-for-emacs if
@@ -26,7 +26,7 @@
 ;; - folding of `[ ... ]'/`( ... )' via `hideshow' (`C-c C-f')
 ;; - inserting a `PREFIX'/`@prefix' declaration for the prefix at point,
 ;;   looked up against a configurable vocabulary-prefix map (`C-c C-p',
-;;   shared data/lookup with `shexc-ts-mode' via `rdf-ts-base.el')
+;;   shared data/lookup with `shexc-ts-mode' via `rdf-core.el')
 ;;
 ;; For documentation on Turtle, see:
 ;; https://www.w3.org/TR/turtle/
@@ -45,7 +45,7 @@
 
 (require 'treesit)
 (require 'hideshow)
-(require 'rdf-ts-base)
+(require 'rdf-core)
 
 (declare-function treesit-parser-create "treesit.c")
 (declare-function treesit-node-at "treesit.c")
@@ -71,11 +71,11 @@
 (defun turtle-ts-mode-install-grammar ()
   "Download and compile the `tree-sitter-turtle' grammar for `turtle-ts-mode'.
 
-See `rdf-ts-base-install-grammar' for what this requires/does; on
+See `rdf-core-install-grammar' for what this requires/does; on
 success, `.ttl' files are immediately associated with `turtle-ts-mode'
 in the current session."
   (interactive)
-  (rdf-ts-base-install-grammar
+  (rdf-core-install-grammar
    'turtle "tree-sitter-turtle" 13 'turtle-ts-mode "\\.ttl\\'"))
 
 (defgroup turtle-ts nil
@@ -90,15 +90,15 @@ in the current session."
 
 ;;; Prefix maps
 ;;
-;; See `rdf-ts-base.el's "Prefix maps" section for the shared data/lookup
+;; See `rdf-core.el's "Prefix maps" section for the shared data/lookup
 ;; this delegates to; `turtle-ts-mode-prefix-maps'/`-prefix-map' mirror
 ;; `shexc-ts-mode-prefix-maps'/`-prefix-map' exactly (down to the default
 ;; value), so the same `.dir-locals.el' project-map convention works in
 ;; either mode.
 
 (defcustom turtle-ts-mode-prefix-maps
-  `(("rdfa" . ,rdf-ts-base-prefix-map-rdfa)
-    ("wikidata" . ,rdf-ts-base-prefix-map-wikidata))
+  `(("rdfa" . ,rdf-core-prefix-map-rdfa)
+    ("wikidata" . ,rdf-core-prefix-map-wikidata))
   "Alist of named prefix maps, for `turtle-ts-mode-prefix-map' to select.
 See `shexc-ts-mode-prefix-maps' (shexc-ts-mode.el) for PLIST's shape
 and an example of adding your own map via `.dir-locals.el'."
@@ -116,15 +116,15 @@ the full explanation of multi-map lookup order; this is its
 
 (defun turtle-ts-mode--prefix-map-names ()
   "`turtle-ts-mode-prefix-map' as a list of names."
-  (rdf-ts-base-prefix-map-names turtle-ts-mode-prefix-map))
+  (rdf-core-prefix-map-names turtle-ts-mode-prefix-map))
 
 (defun turtle-ts-mode--prefix-map-names-string ()
   "`turtle-ts-mode--prefix-map-names', joined for display in a message."
-  (rdf-ts-base-prefix-map-names-string turtle-ts-mode-prefix-map))
+  (rdf-core-prefix-map-names-string turtle-ts-mode-prefix-map))
 
 (defun turtle-ts-mode--prefix-map-lookup (prefix)
-  "Return (IRI . MAP-NAME) for PREFIX -- see `rdf-ts-base-prefix-map-lookup'."
-  (rdf-ts-base-prefix-map-lookup
+  "Return (IRI . MAP-NAME) for PREFIX -- see `rdf-core-prefix-map-lookup'."
+  (rdf-core-prefix-map-lookup
    prefix turtle-ts-mode-prefix-maps turtle-ts-mode-prefix-map))
 
 (defun turtle-ts-mode--prefix-name (text)
@@ -135,7 +135,7 @@ before its `:'.  E.g. \"ex\" for both `ex:p1' and `ex:', and \"\" for
 
 (defun turtle-ts-mode--prefixed-name-at (pos)
   "Return the `prefixed_name' node at POS, or nil if none."
-  (rdf-ts-base-ancestor-of-type (treesit-node-at pos) '("prefixed_name") t))
+  (rdf-core-ancestor-of-type (treesit-node-at pos) '("prefixed_name") t))
 
 (defun turtle-ts-mode--declared-prefixes ()
   "Return the list of prefix names (e.g. \"ex\") the buffer already
@@ -203,7 +203,7 @@ prefix has no entry in any of the active maps."
   "Return the position of the `['/`(' of the blank-node-property-list/
 collection at or around POS that `turtle-ts-mode-toggle-fold' should
 act on, or nil."
-  (when-let* ((node (rdf-ts-base-ancestor-of-type
+  (when-let* ((node (rdf-core-ancestor-of-type
                       (treesit-node-at pos)
                       '("blank_node_property_list" "collection")
                       t)))
@@ -238,8 +238,8 @@ of the nearest enclosing `blank_node_property_list'/`collection'."
 
 (defun turtle-ts-mode--syntax-propertize (beg end)
   "Neutralize non-comment `#' characters between BEG and END -- see
-`rdf-ts-base-neutralize-comment-char-in-iri'."
-  (rdf-ts-base-neutralize-comment-char-in-iri ?# beg end))
+`rdf-core-neutralize-comment-char-in-iri'."
+  (rdf-core-neutralize-comment-char-in-iri ?# beg end))
 
 ;;; Font-lock
 

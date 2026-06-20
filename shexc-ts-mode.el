@@ -3,7 +3,7 @@
 ;; Author: Eric Prud'hommeaux <eric@w3.org>
 ;; Assisted-by: Claude:claude-sonnet-4-6
 ;; Version: 3.0.0
-;; Package-Requires: ((emacs "29.1") (rdf-ts-base "0.1.0"))
+;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: languages
 ;; URL: https://github.com/ericprud/shexc-mode-for-emacs
 ;; SPDX-License-Identifier: MIT
@@ -13,6 +13,14 @@
 ;; This mode is a tree-sitter based companion to `shexc-mode' (see
 ;; shexc-mode.el), built on the grammar at
 ;; https://github.com/ericprud/tree-sitter-shexc
+;;
+;; Shares its `rdf-core.el'/`turtle-ts-mode.el' infrastructure with the
+;; sibling `turtle-ts-mode' (a major mode for Turtle/TriG/N-Triples).
+;; Both currently ship bundled inside this package rather than as
+;; independent MELPA dependencies -- they're new and not yet eligible
+;; for their own MELPA submissions; `Package-Requires' will gain an
+;; `rdf-core' entry once that changes. See the README for the planned
+;; split.
 ;;
 ;; It provides:
 ;; - syntax highlighting (`treesit-font-lock-rules')
@@ -53,7 +61,7 @@
 ;; `shexc-shexj.el' has no dependency of its own on `shexc-ts-mode'.
 (require 'shexc-shexj)
 (require 'transient)
-(require 'rdf-ts-base)
+(require 'rdf-core)
 
 (declare-function treesit-parser-create "treesit.c")
 (declare-function treesit-node-type "treesit.c")
@@ -101,7 +109,7 @@ the grammar on another machine and copy the resulting
 (Windows) into the tree-sitter subdirectory of `user-emacs-directory';
 see the shexc-ts-mode README for details."
   (interactive)
-  (rdf-ts-base-install-grammar
+  (rdf-core-install-grammar
    'shexc "tree-sitter-shexc" 14 'shexc-ts-mode "\\.shexc?\\'"))
 
 (defgroup shexc-ts nil
@@ -134,8 +142,8 @@ see the shexc-ts-mode README for details."
 ;; itself.
 
 (defcustom shexc-ts-mode-prefix-maps
-  `(("rdfa" . ,rdf-ts-base-prefix-map-rdfa)
-    ("wikidata" . ,rdf-ts-base-prefix-map-wikidata))
+  `(("rdfa" . ,rdf-core-prefix-map-rdfa)
+    ("wikidata" . ,rdf-core-prefix-map-wikidata))
   "Alist of named prefix maps, for `shexc-ts-mode-prefix-map' to select.
 
 Each element is (NAME . PLIST), where NAME is a string (matched
@@ -508,14 +516,14 @@ references (`@<#S>', `EXTENDS @<#S>', `&<#S>', `start = @<#S>')."
 
 (cl-defmethod xref-backend-definitions ((_backend (eql shexc-ts-mode)) identifier)
   "Return the `shape_expr_decl' xref defining IDENTIFIER."
-  (rdf-ts-base-matching-xrefs
+  (rdf-core-matching-xrefs
    (shexc-ts-mode--query-labels
     '((shape_expr_decl label: (shape_expr_label) @label)))
    identifier))
 
 (cl-defmethod xref-backend-references ((_backend (eql shexc-ts-mode)) identifier)
   "Return the `shape_ref' xrefs referencing IDENTIFIER."
-  (rdf-ts-base-matching-xrefs
+  (rdf-core-matching-xrefs
    (shexc-ts-mode--query-labels
     '((shape_ref label: (shape_expr_label) @label)))
    identifier))
@@ -1709,7 +1717,7 @@ is the body in question.  Otherwise, if POS is elsewhere in an
 enclosing `shape_expr_decl' -- e.g. on a `<#Shape> EXTENDS
 @<#Other>' header line, before its `{ ... }' body -- fall back to
 that declaration's first `{ ... }'."
-  (if-let* ((def (rdf-ts-base-ancestor-of-type
+  (if-let* ((def (rdf-core-ancestor-of-type
                    (treesit-node-at pos)
                    '("shape_definition" "inline_shape_definition")
                    t)))
@@ -1788,18 +1796,18 @@ E.g. \"ex\" for both `ex:p1' and `ex:', and \"\" for `:p1'."
 (defun shexc-ts-mode--prefix-map-names ()
   "`shexc-ts-mode-prefix-map' as a list of names, regardless of whether
 that variable currently holds a single string or already a list."
-  (rdf-ts-base-prefix-map-names shexc-ts-mode-prefix-map))
+  (rdf-core-prefix-map-names shexc-ts-mode-prefix-map))
 
 (defun shexc-ts-mode--prefix-map-names-string ()
   "`shexc-ts-mode--prefix-map-names', joined for display in a message."
-  (rdf-ts-base-prefix-map-names-string shexc-ts-mode-prefix-map))
+  (rdf-core-prefix-map-names-string shexc-ts-mode-prefix-map))
 
 (defun shexc-ts-mode--prefix-map-lookup (prefix)
   "Return (IRI . MAP-NAME) for PREFIX: each of `shexc-ts-mode-prefix-map's
 named maps (see `shexc-ts-mode--prefix-map-names') is tried in order,
 and MAP-NAME is whichever one first has a matching entry.  Return nil
 if PREFIX is empty or no active map has an entry for it."
-  (rdf-ts-base-prefix-map-lookup
+  (rdf-core-prefix-map-lookup
    prefix shexc-ts-mode-prefix-maps shexc-ts-mode-prefix-map))
 
 (defun shexc-ts-mode--prefixed-name-at (pos)
