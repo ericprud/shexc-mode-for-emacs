@@ -4,12 +4,26 @@
 [![GitHub release](https://img.shields.io/github/v/release/ericprud/shexc-mode-for-emacs)](https://github.com/ericprud/shexc-mode-for-emacs/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-`shexc-ts-mode` is a tree-sitter-based Emacs major mode (Emacs 29+) for
-editing [ShExC](https://shex.io/shex-semantics/#shexc) (ShEx Compact Syntax)
-documents, built on the grammar at
-[tree-sitter-shexc](https://github.com/ericprud/tree-sitter-shexc).
+This repository hosts two Emacs 29+ tree-sitter major modes for RDF-family
+languages, plus the shared infrastructure they're both built on:
+
+- **[`shexc-ts-mode`](#shexc-ts-mode)** — for [ShExC](https://shex.io/shex-semantics/#shexc)
+  (ShEx Compact Syntax), the schema language for validating RDF graphs.
+- **[`turtle-ts-mode`](#turtle-ts-mode)** — for [Turtle](https://www.w3.org/TR/turtle/)
+  (and, via the same grammar, TriG and N-Triples).
+- **[`rdf-core`](#rdf-core)** — shared infrastructure (on-demand grammar
+  install, prefix-map lookup, navigation helpers) the other two build on.
+  Not meant to be used directly.
+
+All three currently ship together as a single MELPA package,
+`shexc-ts-mode` — see [Packaging](#packaging) for why and what's planned.
 
 ## shexc-ts-mode
+
+`shexc-ts-mode` is a tree-sitter-based Emacs major mode for editing
+[ShExC](https://shex.io/shex-semantics/#shexc) (ShEx Compact Syntax)
+documents, built on the grammar at
+[tree-sitter-shexc](https://github.com/ericprud/tree-sitter-shexc).
 
 ![Demo: opening example/person-extends.shex, flymake catches schema:name
 with an undeclared prefix, and the shexc-ts-mode-menu's "Insert PREFIX for
@@ -756,3 +770,101 @@ doesn't have `shexc-ts-mode`'s tree-sitter-backed indentation, structural
 navigation, `xref`, or `flymake` diagnostics, but it does provide syntax
 highlighting with no extra setup. See the `;;; Commentary:` and `;;; Setup:`
 sections at the top of the file for its history and setup instructions.
+
+## turtle-ts-mode
+
+`turtle-ts-mode` is a tree-sitter-based Emacs major mode for editing
+[Turtle](https://www.w3.org/TR/turtle/) documents, built on the grammar at
+[tree-sitter-turtle](https://github.com/GordianDziwis/tree-sitter-turtle).
+
+`turtle-ts-mode.el` provides:
+
+- structure-aware indentation (`indent-region`, `indent-for-tab-command`/`TAB`)
+- syntax highlighting (IRIs, prefixed names, literals, directives, `a`)
+- line commenting (`# ...`, `M-;` via `comment-dwim`)
+- code folding of `[ ... ]`/`( ... )` — blank-node property lists and
+  collections — via `hs-minor-mode` (`C-c C-f`)
+- inserting an `@prefix` declaration for the prefix at point, looked up
+  against the same configurable vocabulary-prefix maps `shexc-ts-mode`
+  uses (`C-c C-p`)
+
+### Keybindings at a glance
+
+| Key | Command | What it does |
+| --- | --- | --- |
+| `M-;` | `comment-dwim` | Comment/uncomment |
+| `C-c C-p` | `turtle-ts-mode-insert-prefix` | Insert an `@prefix` decl for the prefix at point |
+| `C-c C-f` | `turtle-ts-mode-toggle-fold` | Fold/unfold the `[ ... ]`/`( ... )` at point |
+
+### Setup
+
+You'll need Emacs 29+ (built with tree-sitter support). Like
+`shexc-ts-mode`, `turtle-ts-mode` needs a compiled copy of its grammar,
+which isn't bundled with the package:
+
+```lisp
+(add-to-list 'load-path "{folder that contains turtle-ts-mode.el}")  ; unless installed from MELPA
+(require 'turtle-ts-mode)
+
+(add-to-list 'auto-mode-alist '("\\.ttl\\'" . turtle-ts-mode))
+```
+
+then run `M-x turtle-ts-mode-install-grammar`. This clones
+[tree-sitter-turtle](https://github.com/GordianDziwis/tree-sitter-turtle)
+and compiles it the same way `shexc-ts-mode-install-grammar` does (see
+[Setup](#setup) above for the C-toolchain requirements and the no-compiler
+fallback of building elsewhere and copying the shared library over).
+
+Currently pinned to the grammar's `0.1.0` tag. A newer upstream commit adds
+TriG support and targets a newer parser ABI, but isn't tagged yet —
+[asked upstream to cut one](https://github.com/GordianDziwis/tree-sitter-turtle/issues/6);
+`turtle-ts-mode` will move to it once available. Unlike `shexc-ts-mode`,
+there's no regexp-based fallback mode if you can't get the grammar to
+compile.
+
+### Prefix maps and `turtle-ts-mode-insert-prefix` (`C-c C-p`)
+
+Shares its prefix-map data and lookup logic with `shexc-ts-mode` — see
+[Prefix maps and `shexc-ts-mode-insert-prefix`](#prefix-maps-and-shexc-ts-mode-insert-prefix-c-c-c-p)
+above for the full explanation (the built-in `rdfa`/`wikidata` maps, how
+to switch the active map or add your own, file-/directory-local
+overrides, etc.) — `turtle-ts-mode-prefix-maps`/`-prefix-map` mirror their
+`shexc-ts-mode` counterparts exactly, including `.dir-locals.el` support.
+
+### Folding `[ ... ]`/`( ... )` (`C-c C-f`)
+
+`C-c C-f` (`turtle-ts-mode-toggle-fold`) folds/unfolds the blank-node
+property list (`[ ... ]`) or collection (`( ... )`) at or around point,
+enabling `hs-minor-mode` automatically if needed — the Turtle counterpart
+to `shexc-ts-mode-toggle-fold`.
+
+### Also interested in ShEx?
+
+If you're validating the RDF data `turtle-ts-mode` edits, `shexc-ts-mode`
+(also in this package) is a major mode for
+[ShExC](https://shex.io/shex-semantics/#shexc) (ShEx Compact Syntax) — a
+schema language for RDF graphs, playing roughly the role JSON Schema plays
+for JSON. It's built on the same tree-sitter infrastructure
+(`rdf-core`) as this mode. See [shexc-ts-mode](#shexc-ts-mode) above.
+
+## rdf-core
+
+`rdf-core.el` is the shared infrastructure `shexc-ts-mode` and
+`turtle-ts-mode` are both built on: on-demand tree-sitter grammar install
+(`rdf-core-install-grammar`), vocabulary prefix-map data and lookup (the
+built-in `rdfa`/`wikidata` maps both modes share), and generic
+tree-sitter navigation helpers (e.g. "find the nearest ancestor node of
+these types"). It has no user-facing functionality of its own and isn't
+meant to be `require`d directly by anything outside this repo.
+
+## Packaging
+
+`shexc-ts-mode`, `turtle-ts-mode`, and `rdf-core` are meant to become
+three independent MELPA packages — Turtle has a far broader audience than
+ShEx and shouldn't need to pull in ShExC-specific tooling just to get a
+Turtle major mode. For now, `rdf-core.el` and `turtle-ts-mode.el` ship
+bundled inside the existing `shexc-ts-mode` MELPA package instead: both
+are new, and MELPA's contribution guidelines ask that new packages have
+"been maintained in a public repository for 1 month or more" before
+submission. They'll move to their own recipes once that's no longer a
+concern.
