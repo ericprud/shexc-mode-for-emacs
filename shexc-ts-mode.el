@@ -1949,6 +1949,20 @@ followed by an unexpected token\)."
                 diagnostics))))
     diagnostics))
 
+(defvar-local shexc-ts-mode-extra-declared-shape-labels-functions nil
+  "Abnormal hook: each function (no args) returns a list of additional
+fully-resolved shape-label IRI strings to treat as declared, alongside
+whatever `shape_expr_decl's the live ShExC parse tree has.
+
+For shapes declared only inside a converted ShExJ/ShExR fence (see
+shexc-ts-mode-convert.el): such a fence renders as a `/* ... */' block
+comment specifically so tree-sitter-shexc's grammar treats it as an
+opaque `extras' token, which means a shape declared only there is
+structurally invisible to `shexc-ts-mode--flymake-undefined-shapes''s
+own parse-tree query.  This hook lets an external feature (which alone
+knows how to parse its own fence format) supply those labels without
+shexc-ts-mode.el needing to depend on it.")
+
 (defun shexc-ts-mode--flymake-undefined-shapes ()
   "Return `:error' diagnostics for undefined shape references.
 I.e. shape references with no matching `shape_expr_decl', e.g.
@@ -1961,12 +1975,18 @@ declared `<http://a.example/TLabor>' and referenced `@<TLabor>' with a
 matching `BASE <http://a.example/>' in scope are correctly recognized
 as the same shape, never flagged as undefined just because one
 occurrence happened to be written more/less abbreviated than the
-other."
+other.
+
+Also treats every label returned by
+`shexc-ts-mode-extra-declared-shape-labels-functions' as declared --
+see that variable."
   (let* ((ctx (shexc-shexj-buffer-directive-ctx))
          (decl-labels
-          (mapcar (lambda (n) (shexc-shexj-resolve-label ctx n))
-                  (shexc-ts-mode--query-labels
-                   '((shape_expr_decl label: (shape_expr_label) @label))))))
+          (append
+           (mapcar (lambda (n) (shexc-shexj-resolve-label ctx n))
+                   (shexc-ts-mode--query-labels
+                    '((shape_expr_decl label: (shape_expr_label) @label))))
+           (mapcan #'funcall shexc-ts-mode-extra-declared-shape-labels-functions))))
     (delq nil
           (mapcar
            (lambda (ref)

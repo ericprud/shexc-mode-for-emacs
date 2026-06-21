@@ -40,6 +40,7 @@
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
+            "  sx:id <http://a.example/S1> ;\n"
             "  sx:shapeExpr [\n"
             "    a sx:NodeConstraint ;\n"
             "    sx:datatype <http://a.example/dt> ;\n"
@@ -59,6 +60,7 @@
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
+            "  sx:id <http://a.example/S1> ;\n"
             "  sx:shapeExpr [\n"
             "    a sx:Shape ;\n"
             "    sx:closed true ;\n"
@@ -84,6 +86,7 @@ and a Wildcard-stem IriStemRange."
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
+            "  sx:id <http://a.example/S1> ;\n"
             "  sx:shapeExpr [\n"
             "    a sx:NodeConstraint ;\n"
             "    sx:values (\n"
@@ -113,6 +116,7 @@ IRI references -- unlike the structurally identical IriStemRange."
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
+            "  sx:id <http://a.example/S1> ;\n"
             "  sx:shapeExpr [\n"
             "    a sx:NodeConstraint ;\n"
             "    sx:values (\n"
@@ -142,8 +146,10 @@ two reference *forms* differ even though they point at the same IRI."
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
+            "  sx:id <http://a.example/S1> ;\n"
             "  sx:shapeExpr [ a sx:Shape ; sx:expression <http://a.example/E1> ] .\n"
             "\n<http://a.example/E1> a sx:EachOf ;\n"
+            "  sx:id <http://a.example/E1> ;\n"
             "  sx:expressions (\n"
             "    [ a sx:TripleConstraint ; sx:predicate <http://a.example/p1> ]\n"
             "    [ a sx:Ref ; sx:id <http://a.example/E1> ]\n"
@@ -174,12 +180,14 @@ conflated."
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1> <http://a.example/S2>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
+            "  sx:id <http://a.example/S1> ;\n"
             "  sx:shapeExpr [\n"
             "    a sx:TripleConstraint ;\n"
             "    sx:predicate <http://a.example/p1> ;\n"
             "    sx:valueExpr [ a sx:Ref ; sx:id <http://a.example/S2> ]\n"
             "  ] .\n"
             "\n<http://a.example/S2> a sx:ShapeDecl ;\n"
+            "  sx:id <http://a.example/S2> ;\n"
             "  sx:shapeExpr [ a sx:NodeConstraint ; sx:nodeKind \"iri\" ] .\n"))))
 
 (ert-deftest shexc-shexr-test-shape-and-nested ()
@@ -200,6 +208,7 @@ key of its own here)."
             "[] a sx:Schema ;\n"
             "  sx:shapes (<http://a.example/S1>) .\n"
             "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
+            "  sx:id <http://a.example/S1> ;\n"
             "  sx:shapeExpr [\n"
             "    a sx:ShapeAnd ;\n"
             "    sx:shapeExprs (\n"
@@ -215,6 +224,56 @@ key of its own here)."
            (concat
             "@prefix sx: <http://www.w3.org/ns/shex#> .\n\n"
             "[] a sx:Schema .\n"))))
+
+(ert-deftest shexc-shexr-test-parses-reordered-reformatted-reprefixed ()
+  "The RDF-graph decoder (`rdf-turtle.el'/`rdf-model.el'/`rdf-store.el')
+accepts arbitrary valid Turtle for the same graph -- unlike the old
+hand-rolled recursive-descent parser, which was the precise inverse of
+this file's own canonical pretty-printing convention and nothing more.
+This hand-written Turtle uses a different `sx:' prefix name, reordered
+properties, `a' last instead of first, and irregular whitespace -- none
+of which `shexc-shexr-serialize' itself would ever produce -- and must
+still decode to the same value-tree as the hand-built one in
+`shexc-shexr-test-node-constraint'."
+  (let ((expected
+         '(:type "Schema" :shapes
+           ((:type "ShapeDecl" :id "http://a.example/S1"
+             :shapeExpr (:type "NodeConstraint" :nodeKind "iri" :datatype "http://a.example/dt"))))))
+    (should
+     (equal
+      (shexc-shexr-test--normalize expected)
+      (shexc-shexr-test--normalize
+       (shexc-shexr-parse
+        (concat
+         "@prefix shex: <http://www.w3.org/ns/shex#> .\n"
+         "\n"
+         "<http://a.example/S1>\n"
+         "  shex:shapeExpr [\n"
+         "    shex:datatype <http://a.example/dt> ;\n"
+         "    shex:nodeKind \"iri\" ;\n"
+         "    a shex:NodeConstraint\n"
+         "  ] ;\n"
+         "  shex:id <http://a.example/S1> ;\n"
+         "  a shex:ShapeDecl .\n"
+         "\n"
+         "[] shex:shapes ( <http://a.example/S1> ) ;\n"
+         "   a shex:Schema .\n")))))))
+
+(ert-deftest shexc-shexr-test-decode-cycle-detection ()
+  "A node whose own property dereferences back to itself (not wrapped in
+`sx:Ref') must be reported as a `shexc-shexr-parse-error', not hang or
+overflow the stack -- exercises `shexc-shexr--decode-memo''s
+in-progress sentinel."
+  (should-error
+   (shexc-shexr-parse
+    (concat
+     "@prefix sx: <http://www.w3.org/ns/shex#> .\n\n"
+     "[] a sx:Schema ;\n"
+     "  sx:shapes (<http://a.example/S1>) .\n"
+     "\n<http://a.example/S1> a sx:ShapeDecl ;\n"
+     "  sx:id <http://a.example/S1> ;\n"
+     "  sx:shapeExpr <http://a.example/S1> .\n"))
+   :type 'shexc-shexr-parse-error))
 
 ;; ---------------------------------------------------------------------
 ;; Round-trip tests against the shexSpec/shexTest corpus
