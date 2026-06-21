@@ -96,6 +96,46 @@ re-parsing the same text (which would reuse identical `_:x' labels)."
                 "_:a <http://a/next> _:b . _:b <http://a/next> _:c . _:c <http://a/val> <http://a/end> .")))
     (should (rdf-isomorphism-datasets-equal-p store (rdf-isomorphism-test--relabel store)))))
 
+;;; Torture tests: a directed 4-cycle vs. two disjoint directed
+;;; 2-cycles.  Both have 4 quads and 4 blank nodes, and -- this is the
+;;; point -- every node in both graphs is structurally symmetric (each
+;;; has exactly one outgoing and one incoming `next' edge to another
+;;; blank node), so 1-dimensional color refinement (Weisfeiler-Leman)
+;;; provably cannot tell them apart: it converges to *one* signature
+;;; class covering all 4 nodes in each graph, with matching partition
+;;; sizes (4 = 4).  This is the textbook example of 1-WL's blind spot.
+;;; If `rdf-isomorphism--evaluate''s join weren't actually enforcing
+;;; bijection/structure on its own merits -- i.e. if the signature
+;;; filtering were silently carrying the correctness burden -- this
+;;; pair would slip through as a false match, since every candidate
+;;; looks equally plausible by signature alone.  No bijection from a
+;;; 4-cycle onto two disjoint 2-cycles exists (the cycle can't be torn
+;;; into two disconnected pieces by any relabeling), so this must fail.
+
+(ert-deftest rdf-isomorphism-test-4cycle-vs-two-2cycles-doesnt-match ()
+  (let ((cycle-4 (rdf-isomorphism-test--store
+                  "_:a <http://a/next> _:b . _:b <http://a/next> _:c .
+                   _:c <http://a/next> _:d . _:d <http://a/next> _:a ."))
+        (two-2cycles (rdf-isomorphism-test--store
+                      "_:m <http://a/next> _:n . _:n <http://a/next> _:m .
+                       _:p <http://a/next> _:q . _:q <http://a/next> _:p .")))
+    (should-not (rdf-isomorphism-datasets-equal-p cycle-4 two-2cycles))))
+
+;; The completeness counterpart: a genuinely isomorphic pair sharing
+;; the *exact same* color-refinement blind spot (the 4-cycle is just
+;; as symmetric as above, so every node again lands in one shared
+;; signature class with zero discriminating power) must still match.
+;; Together with the test above, this proves the join is both sound
+;; (rejects the non-isomorphic symmetric pair) and complete (accepts
+;; the isomorphic symmetric pair) independent of how little the
+;; signature heuristic narrows things down.
+
+(ert-deftest rdf-isomorphism-test-4cycle-relabeled-matches-despite-symmetric-candidates ()
+  (let ((cycle-4 (rdf-isomorphism-test--store
+                  "_:a <http://a/next> _:b . _:b <http://a/next> _:c .
+                   _:c <http://a/next> _:d . _:d <http://a/next> _:a .")))
+    (should (rdf-isomorphism-datasets-equal-p cycle-4 (rdf-isomorphism-test--relabel cycle-4)))))
+
 ;;; Corpus-scale stress test
 
 (ert-deftest rdf-isomorphism-test-large-fixture-relabeled-matches ()
