@@ -31,6 +31,7 @@
 
 (require 'seq)
 (require 'xref)
+(require 'treesit)
 
 (declare-function treesit-parent-until "treesit.c")
 (declare-function treesit-node-type "treesit.c")
@@ -88,6 +89,30 @@ buffer for details, or copy a pre-built shared library into %s"
      (add-to-list 'auto-mode-alist (cons file-regexp mode))
      (message "%s: grammar installed; matching files now use `%s'"
                human-name mode))))
+
+;; Shared `treesit-language-source-alist' registrations.
+;;
+;; These are otherwise-generic-infrastructure's one deliberate exception
+;; to "no dependency on any particular grammar" above: registering a
+;; grammar is just config data (a URL and a pinned ref), not logic that
+;; knows a grammar's node-type names, and living here lets more than one
+;; consumer (e.g. `turtle-ts-mode' and a future batch Turtle reader that
+;; doesn't want to load any editing-mode machinery) `require' `rdf-core'
+;; and find the registration already in place, without one depending on
+;; the other.
+;;
+;; Pinned to the `0.1.0' tag (parser.c LANGUAGE_VERSION 13), not a raw
+;; commit SHA: `treesit-install-language-grammar' clones with
+;; `git clone ... -b REVISION', and `-b' only accepts a branch/tag name
+;; -- a raw SHA fails with "Remote branch ... not found in upstream
+;; origin" (confirmed empirically).  ABI 13 is older than
+;; `tree-sitter-shexc''s ABI 14 pin, but Emacs's grammar loader accepts
+;; either on Emacs 29.1+/30+.  A newer upstream commit adds TriG support
+;; and targets ABI 14 but isn't tagged yet -- see
+;; https://github.com/GordianDziwis/tree-sitter-turtle/issues/6
+(add-to-list 'treesit-language-source-alist
+             '(turtle "https://github.com/GordianDziwis/tree-sitter-turtle"
+                      "0.1.0"))
 
 ;;; Prefix maps
 ;;
