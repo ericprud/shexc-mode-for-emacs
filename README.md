@@ -868,3 +868,9 @@ are new, and MELPA's contribution guidelines ask that new packages have
 "been maintained in a public repository for 1 month or more" before
 submission. They'll move to their own recipes once that's no longer a
 concern.
+
+## Contributing
+
+Some hints to help contributers:
+- *Actions* -- for a feature branch `rdf-data-model`, run:
+    gh workflow run melpa-build.yml --ref rdf-data-model
