@@ -1,0 +1,134 @@
+name: MELPA build & install
+
+# These checks exist because a real MELPA push surfaced three problems that
+# none of byte-compile/checkdoc/package-lint would have caught:
+#   1. shexc-ts-mode.el used a transient feature (:info rows) newer than the
+#      transient bundled with Emacs, but didn't declare a `transient'
+#      dependency -- package-install-file reported success while `require'
+#      actually errored.
+#   2. A package built with mismatched version-numbering schemes can never
+#      be "upgraded" to from an already-installed version, even though
+#      `package-install-file' reports success.
+#   3. Local sandbox testing used different package-build settings than
+#      melpa.org actually uses, hiding both of the above until tested by
+#      hand against the real recipe and the real published tarball.
+#
+# So: build with melpa/melpa's actual channel config and the actual
+# upstream recipe (against this commit, not whatever's on GitHub already),
+# then install it -- and require it -- in a clean profile, and check that
+# upgrading from whatever is currently live on melpa.org actually activates
+# the new code.
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PACKAGE_NAME: shexc-ts-mode
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: melpa/package-build
+          path: package-build
+      - uses: purcell/setup-emacs@master
+        with:
+          version: '29.1'
+      - name: Build MELPA tarball (unstable channel, i.e. melpa.org)
+        run: emacs -Q --batch -l repo/.github/scripts/melpa-build.el
+        env:
+          PACKAGE_BUILD_DIR: ${{ github.workspace }}/package-build
+          REPO_DIR: ${{ github.workspace }}/repo
+          OUT_DIR: ${{ github.workspace }}/build-out
+          CHANNEL: unstable
+      - uses: actions/upload-artifact@v4
+        with:
+          name: melpa-tarball
+          path: build-out/packages/*.tar
+          if-no-files-found: error
+
+  install-test:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs-version: ['29.1', snapshot]
+    steps:
+      - uses: purcell/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs-version }}
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: melpa-tarball
+          path: build-out
+      - name: Install and require in a clean profile
+        run: |
+          export TARBALL=$(ls build-out/*.tar)
+          emacs -Q --batch -l .github/scripts/melpa-install-test.el
+
+  upgrade-test:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs-version: ['29.1', snapshot]
+    steps:
+      - uses: purcell/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs-version }}
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: melpa-tarball
+          path: build-out
+      - name: Fetch the currently published tarball, if any
+        run: |
+          ver=$(curl -fsSL https://melpa.org/archive.json \
+                | jq -r --arg n "$PACKAGE_NAME" '.[$n].ver // empty | join(".")')
+          if [ -n "$ver" ]; then
+            echo "Found published version: $ver"
+            curl -fsSL -o old.tar "https://melpa.org/packages/${PACKAGE_NAME}-${ver}.tar"
+          else
+            echo "No published version found; treating as a first release."
+          fi
+      - name: Verify upgrading from the published version activates the new code
+        run: |
+          export NEW_TARBALL=$(ls build-out/*.tar)
+          export OLD_TARBALL=$([ -f old.tar ] && echo old.tar || echo "")
+          emacs -Q --batch -l .github/scripts/melpa-upgrade-test.el
+
+  stable-build:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: melpa/package-build
+          path: package-build
+      - uses: purcell/setup-emacs@master
+        with:
+          version: '29.1'
+      - name: Build MELPA tarball (stable channel, i.e. stable.melpa.org)
+        run: emacs -Q --batch -l repo/.github/scripts/melpa-build.el
+        env:
+          PACKAGE_BUILD_DIR: ${{ github.workspace }}/package-build
+          REPO_DIR: ${{ github.workspace }}/repo
+          OUT_DIR: ${{ github.workspace }}/build-out-stable
+          CHANNEL: stable
