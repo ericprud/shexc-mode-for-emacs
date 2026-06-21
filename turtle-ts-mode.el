@@ -53,19 +53,11 @@
 (declare-function treesit-node-text "treesit.c")
 (declare-function treesit-query-capture "treesit.c")
 
-;; Recipe for `M-x turtle-ts-mode-install-grammar' to build
-;; `tree-sitter-turtle'; see the Setup section above.
-;;
-;; Pinned to the `0.1.0' tag (parser.c LANGUAGE_VERSION 13), not a raw
-;; commit SHA: `treesit-install-language-grammar' clones with
-;; `git clone ... -b REVISION', and `-b' only accepts a branch/tag name
-;; -- a raw SHA fails with "Remote branch ... not found in upstream
-;; origin" (confirmed empirically).  ABI 13 is older than
-;; `tree-sitter-shexc''s ABI 14 pin, but Emacs's grammar loader accepts
-;; either on Emacs 29.1+/30+.
-(add-to-list 'treesit-language-source-alist
-             '(turtle "https://github.com/GordianDziwis/tree-sitter-turtle"
-                      "0.1.0"))
+;; `M-x turtle-ts-mode-install-grammar' builds `tree-sitter-turtle'; see
+;; the Setup section above.  Its `treesit-language-source-alist' entry
+;; (the pinned tag, and why) lives in `rdf-core.el' now, shared with any
+;; other consumer that wants the grammar without this mode's editing
+;; machinery -- see the comment there.
 
 ;;;###autoload
 (defun turtle-ts-mode-install-grammar ()
