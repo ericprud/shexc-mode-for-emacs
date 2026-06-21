@@ -31,6 +31,7 @@
   (setq package-archives '(("gnu" . "https://elpa.gnu.org/packages/")
                             ("nongnu" . "https://elpa.nongnu.org/nongnu/")))
   (package-initialize)
+  (package-refresh-contents)
 
   (if (not old-tarball)
       (message "No published version of %s found; skipping upgrade check, just installing fresh."
@@ -49,7 +50,6 @@
                         "the old version installed will never receive this update.")
                new-version old-version))))
 
-  (package-refresh-contents)
   (package-install-file new-tarball)
   (package-initialize t)
   (require (intern package-name))
