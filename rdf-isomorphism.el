@@ -3,7 +3,7 @@
 ;; Author: Eric Prud'hommeaux <eric@w3.org>
 ;; Assisted-by: Claude:claude-sonnet-4-6
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (rdf-model "0.1.0"))
+;; Package-Requires: ((emacs "29.1") (rdf-model "0.1.0") (rdf-join "0.1.0"))
 ;; Keywords: languages
 ;; URL: https://github.com/ericprud/shexc-mode-for-emacs
 ;; SPDX-License-Identifier: MIT
@@ -20,21 +20,20 @@
 ;; dependency) than the graphs this is built for need (shexTest
 ;; fixtures, individual ShExR schemas).
 ;;
-;; Evaluation is an iterative nested-loop join over an ordered list of
-;; patterns (`rdf-isomorphism--quad-order'), not recursion over blank
-;; nodes -- depth is a `dolist' over patterns, with all live partial
-;; matches tracked breadth-first in a result-row list, trading stack
-;; depth for list width.  This avoids the `max-lisp-eval-depth' problem
-;; a per-blank-node-recursive backtracking search hit against
+;; Evaluation is the iterative, non-recursive nested-loop join in
+;; `rdf-join.el' (shared with `rdf-bgp.el', SPARQL BGP matching) over
+;; an ordered list of patterns (`rdf-isomorphism--quad-order'), not
+;; recursion over blank nodes -- this avoids the `max-lisp-eval-depth'
+;; problem a per-blank-node-recursive backtracking search hit against
 ;; shexTest's schemas/_all.ttl (~160 blank nodes) in an earlier version
 ;; of this file.
 ;;
 ;; Ordinary SPARQL BGP matching computes a graph *homomorphism*: two
 ;; pattern variables may legally bind to the same target node.  Graph
 ;; *isomorphism* (what dataset equality needs) requires a *bijection* --
-;; two distinct blank nodes must never collapse onto one.  Every join
-;; step here enforces that explicitly (`rdf-isomorphism--consider'),
-;; not just the final result.
+;; two distinct blank nodes must never collapse onto one.  This is the
+;; INJECTIVE-P argument `rdf-join-evaluate' is called with, below --
+;; enforced at every join step, not just the final result.
 ;;
 ;; Patterns are ordered by one frontier-expansion traversal (numbering
 ;; blank nodes by when they're first reached from a root, preferring
@@ -63,6 +62,7 @@
 
 (require 'cl-lib)
 (require 'rdf-model)
+(require 'rdf-join)
 
 (defvar rdf-isomorphism-refinement-rounds 3
   "How many rounds of color-refinement to run before joining.
@@ -210,66 +210,12 @@ blank nodes sort first (rank -1, vacuously ready)."
                     mx)))
       (sort (copy-sequence quads) (lambda (x y) (< (quad-rank x) (quad-rank y)))))))
 
-;;; Evaluation: iterative join.  Each row is an alist
-;;; ((pattern-blank-node . target-blank-node) ...) -- extended via
-;;; `cons' (O(1), shares structure with its parent row) rather than
-;;; hash-table copying.
-
-(defun rdf-isomorphism--index-by-predicate (quads)
-  (let ((table (make-hash-table :test #'equal)))
-    (dolist (q quads) (push q (gethash (rdf-model-quad-predicate q) table)))
-    table))
-
-(defun rdf-isomorphism--consider (pat-term cand-term row-box sig-a candidates-by-sig-b)
-  "Extend (the row in) ROW-BOX to bind PAT-TERM (if it's a blank node
-and not already bound) to CAND-TERM, or verify consistency if it's
-already bound.  Returns nil (and leaves ROW-BOX's row unchanged) if
-CAND-TERM can't possibly be valid for PAT-TERM: not a blank node, would
-collapse two distinct pattern blank nodes onto one target blank node
-\(the homomorphism-vs-isomorphism bijection requirement), or is outside
-PAT-TERM's color-refinement candidate class."
-  (if (not (rdf-model-blank-node-p pat-term))
-      t
-    (let* ((row (car row-box))
-           (existing (assoc pat-term row)))
-      (if existing
-          (equal (cdr existing) cand-term)
-        (and (rdf-model-blank-node-p cand-term)
-             (not (rassoc cand-term row))
-             (member cand-term (gethash (gethash pat-term sig-a) candidates-by-sig-b))
-             (progn (setcar row-box (cons (cons pat-term cand-term) row)) t))))))
-
-(defun rdf-isomorphism--evaluate (quad-order sig-a candidates-by-sig-b index-b)
-  "Non-nil if some row of bindings makes every pattern in QUAD-ORDER
-(A's quads) match a real quad in B (via INDEX-B, B's quads indexed by
-predicate), injectively."
-  (let ((rows (list nil))) ; one row so far: the empty binding alist
-    (catch 'no-match
-      (dolist (pattern quad-order)
-        (let (next-rows)
-          (dolist (row rows)
-            (cl-labels ((resolve (term) (if (rdf-model-blank-node-p term) (cdr (assoc term row)) term)))
-              (let ((s (resolve (rdf-model-quad-subject pattern)))
-                    (o (resolve (rdf-model-quad-object pattern)))
-                    (g (resolve (rdf-model-quad-graph pattern))))
-                (dolist (cand (gethash (rdf-model-quad-predicate pattern) index-b))
-                  (when (and (or (null s) (equal s (rdf-model-quad-subject cand)))
-                             (or (null o) (equal o (rdf-model-quad-object cand)))
-                             (or (null g) (equal g (rdf-model-quad-graph cand))))
-                    (let ((row-box (list row)))
-                      (when (and (rdf-isomorphism--consider (rdf-model-quad-subject pattern)
-                                                              (rdf-model-quad-subject cand)
-                                                              row-box sig-a candidates-by-sig-b)
-                                 (rdf-isomorphism--consider (rdf-model-quad-object pattern)
-                                                              (rdf-model-quad-object cand)
-                                                              row-box sig-a candidates-by-sig-b)
-                                 (rdf-isomorphism--consider (rdf-model-quad-graph pattern)
-                                                              (rdf-model-quad-graph cand)
-                                                              row-box sig-a candidates-by-sig-b))
-                        (push (car row-box) next-rows))))))))
-          (setq rows next-rows)
-          (unless rows (throw 'no-match nil))))
-      (and rows t))))
+;;; Evaluation: delegates to the shared join engine in `rdf-join.el',
+;;; with blank nodes as the variables, INJECTIVE-P required (bijection,
+;;; not homomorphism), and an ALLOWED-P closure restricting candidates
+;;; to B's matching color-refinement signature class (built per call in
+;;; `rdf-isomorphism-datasets-equal-p', since it closes over SIG-A and
+;;; CANDIDATES-BY-SIG-B).
 
 ;;; Public API
 
@@ -299,8 +245,13 @@ before any join."
                        (let* ((candidates-by-sig-b (rdf-isomorphism--candidates-by-sig bnodes-b sig-b))
                               (bnode-order (rdf-isomorphism--bnode-order bnodes-a sig-a candidates-by-sig-b quads-by-node-a))
                               (quad-order (rdf-isomorphism--quad-order quads-a bnode-order))
-                              (index-b (rdf-isomorphism--index-by-predicate quads-b)))
-                         (rdf-isomorphism--evaluate quad-order sig-a candidates-by-sig-b index-b)))))))))
+                              (index-b (rdf-join-index-by-predicate quads-b)))
+                         (and (rdf-join-evaluate
+                               quad-order index-b #'rdf-model-blank-node-p t
+                               (lambda (pat-term cand-term)
+                                 (and (rdf-model-blank-node-p cand-term)
+                                      (member cand-term (gethash (gethash pat-term sig-a) candidates-by-sig-b)))))
+                              t)))))))))
 
 (provide 'rdf-isomorphism)
 
