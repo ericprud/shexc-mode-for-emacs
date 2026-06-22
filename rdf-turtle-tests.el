@@ -173,6 +173,16 @@
                   (rdf-model-quad-object (car (rdf-turtle-test--quads "<http://a/s> <http://a/p> \"\\u00e9\" ."))))
                  "é")))
 
+(ert-deftest rdf-turtle-test-uchar-escape-8-digit ()
+  "A `\\Uxxxxxxxx' (8-hex-digit) UCHAR escape, distinct from `\\uxxxx'
+\(4-hex-digit) -- regression test for a `case-fold-search' bug where
+the regex's lowercase `u' alternative also matched an uppercase `U',
+misparsing the 8-hex escape as a 4-hex one plus four leftover literal
+characters."
+  (should (equal (rdf-model-literal-value
+                  (rdf-model-quad-object (car (rdf-turtle-test--quads "<http://a/s> <http://a/p> \"\\U0001D4B8\" ."))))
+                 "𝒸")))
+
 (ert-deftest rdf-turtle-test-long-string-literal ()
   (should (equal (rdf-model-literal-value
                   (rdf-model-quad-object (car (rdf-turtle-test--quads "<http://a/s> <http://a/p> \"\"\"a\nb\"\"\" ."))))
