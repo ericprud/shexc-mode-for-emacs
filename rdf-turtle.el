@@ -75,31 +75,39 @@
 (defconst rdf-turtle--uchar-rx "\\\\\\(?:u\\([0-9a-fA-F]\\{4\\}\\)\\|U\\([0-9a-fA-F]\\{8\\}\\)\\)")
 
 (defun rdf-turtle--unescape-uchar (text)
-  (replace-regexp-in-string
-   rdf-turtle--uchar-rx
-   (lambda (m)
-     (save-match-data
-       (string-match rdf-turtle--uchar-rx m)
-       (string (string-to-number (or (match-string 1 m) (match-string 2 m)) 16))))
-   text t t))
+  ;; `case-fold-search' would make the regex's lowercase `u' alternative
+  ;; also match an uppercase `U' -- so a `\Uxxxxxxxx' (8-hex) escape
+  ;; would be misparsed as `\u' (4-hex) plus four leftover literal
+  ;; characters, silently corrupting the decoded codepoint.
+  (let ((case-fold-search nil))
+    (replace-regexp-in-string
+     rdf-turtle--uchar-rx
+     (lambda (m)
+       (save-match-data
+         (string-match rdf-turtle--uchar-rx m)
+         (string (string-to-number (or (match-string 1 m) (match-string 2 m)) 16))))
+     text t t)))
 
 (defconst rdf-turtle--echar-or-uchar-rx
   "\\\\\\(?:u\\([0-9a-fA-F]\\{4\\}\\)\\|U\\([0-9a-fA-F]\\{8\\}\\)\\|\\(.\\)\\)")
 
 (defun rdf-turtle--unescape-string (text)
-  (replace-regexp-in-string
-   rdf-turtle--echar-or-uchar-rx
-   (lambda (m)
-     (save-match-data
-       (string-match rdf-turtle--echar-or-uchar-rx m)
-       (cond
-        ((match-string 1 m) (string (string-to-number (match-string 1 m) 16)))
-        ((match-string 2 m) (string (string-to-number (match-string 2 m) 16)))
-        (t (pcase (aref (match-string 3 m) 0)
-             (?t "\t") (?n "\n") (?r "\r") (?b "\b") (?f "\f")
-             (?\" "\"") (?\' "'") (?\\ "\\")
-             (c (string c)))))))
-   text t t))
+  ;; See `rdf-turtle--unescape-uchar' on why `case-fold-search' must be
+  ;; nil here too.
+  (let ((case-fold-search nil))
+    (replace-regexp-in-string
+     rdf-turtle--echar-or-uchar-rx
+     (lambda (m)
+       (save-match-data
+         (string-match rdf-turtle--echar-or-uchar-rx m)
+         (cond
+          ((match-string 1 m) (string (string-to-number (match-string 1 m) 16)))
+          ((match-string 2 m) (string (string-to-number (match-string 2 m) 16)))
+          (t (pcase (aref (match-string 3 m) 0)
+               (?t "\t") (?n "\n") (?r "\r") (?b "\b") (?f "\f")
+               (?\" "\"") (?\' "'") (?\\ "\\")
+               (c (string c)))))))
+     text t t)))
 
 (defun rdf-turtle--unescape-pn-local (text)
   (replace-regexp-in-string "\\\\\\(.\\)" "\\1" text t))
