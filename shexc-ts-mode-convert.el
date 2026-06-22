@@ -674,8 +674,31 @@ current buffer."
 (defun shexc-ts-mode-convert--flymake-backend (report-fn &rest _args)
   (funcall report-fn (shexc-ts-mode-convert--flymake-fence-errors)))
 
+;; ---------------------------------------------------------------------
+;; Undefined-shape flymake check: every ShapeDecl declared inside a
+;; fence counts as declared too -- see
+;; `shexc-ts-mode-extra-declared-shape-labels-functions'.
+;; ---------------------------------------------------------------------
+
+(defun shexc-ts-mode-convert--fenced-decl-labels ()
+  "Every ShapeDecl `:id' declared inside a ShExJ/ShExR fence in the
+current buffer -- skips any fence that fails to parse (already
+separately reported by `shexc-ts-mode-convert--flymake-fence-errors').
+Fence-derived `:id's are always fully-resolved absolute IRIs (ShExJ/
+ShExR never shorten), directly comparable against
+`shexc-shexj-resolve-label''s output."
+  (let (labels)
+    (dolist (node (shexc-ts-mode-convert--fence-candidate-comments))
+      (when-let* ((fence (shexc-ts-mode-convert--fence-at (treesit-node-start node)))
+                  (tree (ignore-errors (shexc-ts-mode-convert--fence-tree fence))))
+        (dolist (decl (plist-get tree :shapes))
+          (push (plist-get decl :id) labels))))
+    labels))
+
 (defun shexc-ts-mode-convert--setup ()
-  (add-hook 'flymake-diagnostic-functions #'shexc-ts-mode-convert--flymake-backend nil t))
+  (add-hook 'flymake-diagnostic-functions #'shexc-ts-mode-convert--flymake-backend nil t)
+  (add-hook 'shexc-ts-mode-extra-declared-shape-labels-functions
+            #'shexc-ts-mode-convert--fenced-decl-labels nil t))
 
 ;;;###autoload
 (add-hook 'shexc-ts-mode-hook #'shexc-ts-mode-convert--setup)

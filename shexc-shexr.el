@@ -2,8 +2,8 @@
 
 ;; Author: Eric Prud'hommeaux <eric@w3.org>
 ;; Assisted-by: Claude:claude-sonnet-4-6
-;; Version: 3.0.0
-;; Package-Requires: ((emacs "29.1"))
+;; Version: 4.0.0
+;; Package-Requires: ((emacs "29.1") (rdf-model "0.1.0") (rdf-store "0.1.0") (rdf-turtle "0.1.0"))
 ;; Keywords: languages
 ;; URL: https://github.com/ericprud/shexc-mode-for-emacs
 ;; SPDX-License-Identifier: MIT
@@ -14,9 +14,15 @@
 ;; bespoke canonical Turtle shape -- NOT general Turtle, and not
 ;; byte-matched against shexSpec/shexTest's own .ttl fixtures (which vary
 ;; in formatting across fixtures -- evidence of multiple hands/tools, not
-;; one disciplined serializer).  The matching narrow parser
-;; (`shexc-shexr-parse', a later milestone) only ever needs to recognize
-;; this exact shape, never general Turtle/N3.
+;; one disciplined serializer).
+;;
+;; `shexc-shexr-parse' (the reader) is, unlike the writer, general: it
+;; parses arbitrary valid Turtle expressing this vocabulary -- not just
+;; this file's own canonical output -- via `rdf-turtle.el' (a real
+;; tree-sitter Turtle parser) and `rdf-model.el'/`rdf-store.el' (an
+;; RDFJS-like quad API), so a hand-edited fence (different property
+;; order, prefix choice, line-wrapping, ...) still reads back correctly.
+;; See "RDF-graph parser" below.
 ;;
 ;; Canonical shape, fixed by construction (see `shexc-shexr--pretty-body'
 ;; and `shexc-shexr--pretty-value'):
@@ -69,11 +75,15 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'pcase)
+(require 'rdf-model)
+(require 'rdf-store)
+(require 'rdf-turtle)
 
 (defconst shexc-shexr--prefix-line
   "@prefix sx: <http://www.w3.org/ns/shex#> .\n")
 
 (defconst shexc-shexr--xsd-boolean-iri "http://www.w3.org/2001/XMLSchema#boolean")
+(defconst shexc-shexr--xsd-string-iri "http://www.w3.org/2001/XMLSchema#string")
 
 (defconst shexc-shexr--last-sorted-keys
   '(:valueExpr :shapeExpr :expression :expressions :shapeExprs :shapes)
@@ -275,26 +285,48 @@ complement (Iri*) uses IRI references instead.  (Unlike `:exclusions',
 (defun shexc-shexr--key-string-mode (type key)
   "How a bare-string value of KEY (within a node of :type TYPE) should be
 rendered: `plain' for a Turtle string literal, `value' for a value-set/
-Annotation-object entry (bare IRI, or a literal -- see
-`shexc-shexr--parse-value-set-entry'), `literal-iri' for a bare
-`<iri>'/`_:label' that's *never* a same-document-hoisted-object
-reference (so the narrow parser must read it as a plain string, never
-consulting the hoist table -- see `shexc-shexr--parse-rdf-value'),
-`ref' (the default) for a wrapped `sx:Ref' id-reference.
+Annotation-object entry (bare IRI, a literal, or a typed object like
+`IriStem' -- see `shexc-shexr--decode-value'), `literal-iri' for a bare
+`<iri>'/`_:label' that's *always* exactly that -- never itself
+dereferenced, even if that very term happens to coincide with some
+other node's subject elsewhere in the graph (so the decoder must read
+it as plain identifier text unconditionally, never consulting the
+term's own `rdf:type'), `ref' (the default) for a wrapped `sx:Ref'
+id-reference.
 
-`:predicate'/`:datatype' are always `literal-iri': ShExR.shex types
-both as plain `IRI', with no shapeExpr/ShapeDecl alternative, so unlike
-`:valueExpr'/`:shapeExpr'/`:expression(s)'/`:shapeExprs'/`:extends'
-\(whose union types deliberately allow a same-document hoisted object's
-id to appear there -- confirmed empirically via kitchenSink.shex and
-_all.shex) there's no real ambiguity for `ref''s `sx:Ref' wrapping to
-guard against; wrapping them anyway would also be non-conformant
-\(`sx:predicate'/`sx:datatype' must be a bare IRI per ShExR.shex)."
+`:predicate'/`:datatype'/`:id' are always `literal-iri': ShExR.shex
+types `:predicate'/`:datatype' as plain `IRI', with no shapeExpr/
+ShapeDecl alternative, so unlike `:valueExpr'/`:shapeExpr'/
+`:expression(s)'/`:shapeExprs'/`:extends' \(whose union types
+deliberately allow a same-document hoisted object's id to appear there
+-- confirmed empirically via kitchenSink.shex and _all.shex) there's no
+real ambiguity for `ref''s `sx:Ref' wrapping to guard against; wrapping
+them anyway would also be non-conformant \(`sx:predicate'/`sx:datatype'
+must be a bare IRI per ShExR.shex).  `:id' is never itself a nested
+object, so it's never ambiguous either -- and is needed as an explicit
+property (not just the hoisted statement's subject) so the RDF-graph
+parser can tell a deliberately blank-node-labeled `:id' (e.g. ShExC's
+`_:S2 { ... }') apart from a purely anonymous inline `[ ... ]', which
+look identical as bare graph shape once parsed -- see
+`shexc-shexr--decode-node-properties'.  Crucially, this also means
+`literal-iri' must never be used for a key whose value could itself be
+a same-document node's *own identifying IRI* (decoding `:id' as `ref'-
+or `value'-style dereference would self-recurse forever, since that
+very IRI is always also some node's subject elsewhere).
+
+Iri-flavored `:exclusions' entries (the complement of
+`shexc-shexr--plain-text-types') are `value', not `literal-iri', even
+though a bare entry renders identically to `literal-iri' \(both fall to
+the same bare-`<iri>'/`_:label' case in `shexc-shexr--flat-value';
+they differ only for a non-bare entry -- an Iri-flavored `:exclusions'
+entry can itself be a typed `IriStem'/`IriStemRange' object \(e.g.
+`1val1dotMinusiriStem3.shex'), which `value' mode's decoder correctly
+dereferences and `literal-iri' deliberately never does."
   (cond
    ((memq key shexc-shexr--plain-text-keys) 'plain)
    ((eq key :exclusions)
-    (if (member type shexc-shexr--plain-text-types) 'plain 'literal-iri))
-   ((memq key '(:predicate :datatype)) 'literal-iri)
+    (if (member type shexc-shexr--plain-text-types) 'plain 'value))
+   ((memq key '(:predicate :datatype :id)) 'literal-iri)
    ((memq key '(:values :object)) 'value)
    (t 'ref)))
 
@@ -340,12 +372,18 @@ properties (`shexc-shexr--last-sorted-keys') sorted last."
     (append (sort rest (lambda (a b) (string< (symbol-name a) (symbol-name b)))) last)))
 
 (defun shexc-shexr--node-keys (node)
-  "NODE's property keys (excluding `:type'/`:id'/`:context'), in canonical
+  "NODE's property keys (excluding `:type'/`:context'), in canonical
 order.  `:context' is JSON-LD-adapter metadata (see shexc-shexj.el's
-@context handling), not real RDF content -- excluded here so the narrow
-parser never has to special-case it."
+@context handling), not real RDF content -- excluded here so the
+RDF-graph parser never has to special-case it.  `:id' *is* included
+\(rendered via `:id''s `literal-iri' string-mode, see
+`shexc-shexr--key-string-mode') -- every node reaching this function
+with a non-nil `:id' is, by construction, a hoisted top-level
+statement (an inline `[ ... ]' object never has one), so this never
+affects an object's *own* rendering, only adds one property to its
+hoisted statement."
   (shexc-shexr--sort-keys
-   (remq :context (remq :type (remq :id (shexc-shexr--plist-keys node))))))
+   (remq :context (remq :type (shexc-shexr--plist-keys node)))))
 
 ;; ---------------------------------------------------------------------
 ;; Optional output-position tracking: every render function below
@@ -651,359 +689,286 @@ treats as a locatable target, or it simply isn't part of SCHEMA)."
     (if target final-pair (car final-pair))))
 
 ;; ---------------------------------------------------------------------
-;; Narrow parser: the precise inverse of the serializer above, and
-;; nothing more general.  Hand-written recursive descent over a buffer,
-;; in two passes:
+;; RDF-graph parser: general Turtle, via `rdf-turtle.el'/`rdf-model.el'/
+;; `rdf-store.el' rather than a hand-rolled recursive descent over text.
+;; Reads any valid Turtle expressing this vocabulary -- not just this
+;; file's own canonical output -- so a hand-edited fence (reordered
+;; properties, a different prefix/IRI-shortening choice, reformatted
+;; whitespace, ...) still parses correctly, which the old narrow parser
+;; (replaced by this section) could not do.
 ;;
-;; Pass 1 parses the raw text structure into "raw" plists/lists, with
-;; every naked `<IRI>'/`_:label' VALUE-position token left as a deferred
-;; reference marker (`shexc-shexr--make-ref') rather than resolved
-;; immediately -- resolving requires knowing the complete hoist table,
-;; which isn't available until every top-level statement has been seen.
+;; Three layers: `shexc-shexr-parse' finds the `a sx:Schema' root quad
+;; and kicks off `shexc-shexr--decode-node'; `--decode-node' decodes one
+;; RDF subject's triples into a value-tree node (`:type' plus
+;; properties, recursing into `--decode-value' for each); `--decode-value'
+;; decodes one RDF term per a key's `shexc-shexr--key-string-mode' (the
+;; very same dispatch table the serializer above already uses, so the
+;; two directions can never disagree about what a key means).
 ;;
-;; Pass 2 (`shexc-shexr--resolve') walks the Schema root's raw tree and
-;; replaces every deferred marker with the fully-resolved content of the
-;; matching top-level hoisted statement, `:id' restored.
+;; `ref'-mode values (`:valueExpr'/`:shapeExpr'/`:expression(s)'/
+;; `:shapeExprs'/`:extends'/`:start'/...) are the one case requiring a
+;; real decision: a bare reference (no `sx:Ref' wrapper) is dereferenced
+;; -- decoded recursively as a full nested node -- while an `sx:Ref'-
+;; wrapped one is unwrapped straight to its bare `sx:id' string.
 ;;
-;; By construction (see `shexc-shexr--key-string-mode'), a naked
-;; `<IRI>'/`_:label' VALUE-position token reached via the default `ref'
-;; dispatch can come either from the serializer's object branch
-;; (`shexc-shexr--flat-value's `(plist-get v :id)' check) -- which is
-;; also exactly what triggers hoisting that object to its own top-level
-;; statement in the first place, so a deferred marker is guaranteed to
-;; find a match there -- or from a bare *string* ShExJ value at one of
-;; the few properties whose ShExJ union type genuinely allows it to
-;; coincide with a same-document hoisted object's id (a shape-ref
-;; `:valueExpr'/`:shapeExpr', an `:expression(s)'/`:shapeExprs'/
-;; `:extends' member, an Include element, ...).  That second case is
-;; wrapped in `sx:Ref' at serialize time and unwrapped straight back to
-;; the bare string in `shexc-shexr--parse-inline-object', bypassing the
-;; deferred-marker/hoist-table machinery entirely -- not RDF-conformant
-;; (ShExR.shex has no `sx:Ref' class), kept only until a
-;; semantic-equivalence round-trip comparison removes the need for it.
+;; Restoring `:id' on a dereferenced node needs its own explicit `sx:id'
+;; property -- it can *not* be inferred from whether the node's RDF
+;; subject is a NamedNode or a BlankNode.  IRI-shaped `:id's would make
+;; that distinction look safe (a purely anonymous inline `[ ... ]'
+;; always parses to a fresh blank node, never an IRI), but ShExC also
+;; allows a blank-node-labeled shape/tripleExpr id (`_:S2 { ... }',
+;; `grammar.js''s `shape_expr_label'/`triple_expr_label' both being
+;; `choice($._iri, $.blank_node)') -- and a deliberately-labeled `_:S2'
+;; is graph-shape-identical to an anonymous `[ ... ]''s synthetic blank
+;; node once parsed (RDF itself draws no such distinction; only Turtle's
+;; concrete syntax does, and that's exactly the information real Turtle
+;; parsing discards).  So the serializer now emits an explicit `sx:id'
+;; property on every hoisted statement (`shexc-shexr--node-keys' no
+;; longer excludes `:id'; see `shexc-shexr--key-string-mode''s `:id'
+;; case) -- inline `[ ... ]' objects never have one (by construction,
+;; only hoisted nodes do), so this is unambiguous and requires no
+;; heuristic at decode time: `:id' just falls out of the same generic
+;; per-predicate decode loop as any other property.  (The Schema root
+;; itself never has `:id' either way -- `shexc-shexr-parse' below builds
+;; the Schema's own wrapper explicitly rather than via dereference.)
 ;;
-;; `:predicate'/`:datatype'/Iri-flavored `:exclusions' (`literal-iri'
-;; mode, see `shexc-shexr--key-string-mode') are a *third*, simpler
-;; case: ShExR.shex types them as plain `IRI', with no object
-;; alternative at all, so `shexc-shexr--parse-rdf-value' resolves them
-;; immediately to a plain string, the same way `plain'/`value' mode do
-;; -- never deferred, regardless of whether that same IRI also happens
-;; to be hoisted elsewhere (a real possibility: kitchenSink.shex's
-;; `ex:reportedBy IRI @UserShape:' and _all.shex's reuse of "IRI" as
-;; both a ShapeDecl id and a `:datatype' value both demonstrate this
-;; isn't just theoretical) -- consulting the hoist table for these could
-;; only produce a wrong answer, never a right one.  `resolve''s fallback
-;; to a bare string when no hoisted statement matches remains dead code
-;; for machine-generated input on the `ref'-mode path above, kept only
-;; as a graceful-degradation safety net for hand-edited fenced ShExR text.
+;; List-vs-scalar needs no hardcoded "which ShExJ keys are arrays"
+;; table: a property's RDF shape says so directly.  Exactly one quad
+;; whose object isn't an RDF-list node (no `rdf:first', not `rdf:nil')
+;; -> scalar.  Otherwise (more than one quad sharing that predicate, or
+;; the one object *is* a list node) -> a list: walk the
+;; `rdf:first'/`rdf:rest' chain for a single list-node object (this
+;; serializer's own convention, preserving order); else decode each
+;; quad's object independently (a tolerated, non-canonical repeated-
+;; triple form -- real RDF has no inherent order for that shape anyway,
+;; so this only ever matters for hand-edited input, never this file's
+;; own output).  `:extra' is the one property always encoded as
+;; repeated `sx:extra' triples, never an RDF list (matching the
+;; serializer's own `shexc-shexr--flat-prop'/`--pretty-prop' special
+;; case for it), so it's decoded that way unconditionally.
 
 (define-error 'shexc-shexr-parse-error "ShExR parse error")
 
+(defconst shexc-shexr--context-iri "http://www.w3.org/ns/shex.jsonld"
+  "Duplicates the literal in `shexc-shexj--context-iri' -- kept local
+rather than depending on shexc-shexj.el for one string, per this file's
+existing \"no dependency on shexc-shexj beyond the value-tree's shape\"
+boundary (see this file's Commentary).")
+
+(defconst shexc-shexr--sx-ns "http://www.w3.org/ns/shex#")
+(defconst shexc-shexr--rdf-ns "http://www.w3.org/1999/02/22-rdf-syntax-ns#")
+
+(defconst shexc-shexr--rdf-type (rdf-model-named-node-create :value (concat shexc-shexr--rdf-ns "type")))
+(defconst shexc-shexr--rdf-first (rdf-model-named-node-create :value (concat shexc-shexr--rdf-ns "first")))
+(defconst shexc-shexr--rdf-rest (rdf-model-named-node-create :value (concat shexc-shexr--rdf-ns "rest")))
+(defconst shexc-shexr--rdf-nil (rdf-model-named-node-create :value (concat shexc-shexr--rdf-ns "nil")))
+(defconst shexc-shexr--sx-schema (rdf-model-named-node-create :value (concat shexc-shexr--sx-ns "Schema")))
+(defconst shexc-shexr--sx-ref (rdf-model-named-node-create :value (concat shexc-shexr--sx-ns "Ref")))
+(defconst shexc-shexr--sx-id (rdf-model-named-node-create :value (concat shexc-shexr--sx-ns "id")))
+(defconst shexc-shexr--sx-extra (rdf-model-named-node-create :value (concat shexc-shexr--sx-ns "extra")))
+
+(defconst shexc-shexr--omit '--shexc-shexr-omit--
+  "Sentinel `shexc-shexr--decode-value' returns for a `false'-valued
+non-`value'-mode boolean, meaning \"omit this property entirely\" --
+the existing value-tree convention for these (`:closed'/`:abstract'/
+`:inverse') never represents false as a present-but-nil key, only as
+the key's absence.")
+
 (defun shexc-shexr--fail (fmt &rest args)
-  "Signal a structured `shexc-shexr-parse-error' at point, never an
-uncaught generic Lisp error -- callers (e.g. a flymake backend) can
-catch this and report (point) as the failing position."
-  (signal 'shexc-shexr-parse-error (list (apply #'format fmt args) (point))))
+  "Signal a structured `shexc-shexr-parse-error', never an uncaught
+generic Lisp error -- callers (e.g. a flymake backend) can catch this
+and report a message without crashing."
+  (signal 'shexc-shexr-parse-error (list (apply #'format fmt args))))
 
-(defun shexc-shexr--make-ref (id) (cons 'shexc-shexr--ref id))
-(defun shexc-shexr--ref-p (x) (and (consp x) (eq (car x) 'shexc-shexr--ref)))
+(defun shexc-shexr--type-local-name (type-term)
+  "TYPE-TERM is the object of a subject's `rdf:type' quad -- its local
+name after stripping the `sx:' namespace, or a `shexc-shexr--fail' if
+it isn't a NamedNode under that namespace at all."
+  (unless (and (rdf-model-named-node-p type-term)
+               (string-prefix-p shexc-shexr--sx-ns (rdf-model-named-node-value type-term)))
+    (shexc-shexr--fail "expected an `sx:'-namespaced rdf:type, got %S" type-term))
+  (substring (rdf-model-named-node-value type-term) (length shexc-shexr--sx-ns)))
 
-(defun shexc-shexr--skip-ws ()
-  (skip-chars-forward " \t\n\r"))
-
-(defun shexc-shexr--consume (literal)
-  (shexc-shexr--skip-ws)
-  (unless (looking-at (regexp-quote literal))
-    (shexc-shexr--fail "expected `%s'" literal))
-  (goto-char (+ (point) (length literal))))
-
-(defconst shexc-shexr--pname-re
-  "\\([A-Za-z][A-Za-z0-9_-]*\\):\\([A-Za-z0-9_][A-Za-z0-9_.-]*\\)"
-  "A `name:local' PNAME_LN token -- deliberately as restricted as
-`shexc-shexr--safe-pn-local-p' (no `%XX'/backslash PN_LOCAL escapes):
-the serializer only ever shortens into this exact safe subset, so the
-parser only ever needs to recognize that subset back.")
-
-(defconst shexc-shexr--iri-or-bnode-start-re
-  (concat "<\\|_:\\|" shexc-shexr--pname-re)
-  "Matches at the start of anything `shexc-shexr--parse-iri-or-bnode'
-can parse -- used as a lookahead guard by callers (e.g.
-`shexc-shexr--parse-rdf-value') that must distinguish \"there's an IRI/
-bnode/prefixed-name here\" from \"there isn't, try something else\"
-without committing to a parse.")
-
-(defvar shexc-shexr--parse-prefixes nil
-  "Dynamically bound by `shexc-shexr-parse' to the alist of (NAME .
-NAMESPACE-IRI) pairs declared by the fence's own `PREFIX name: <ns>'
-header lines -- see `shexc-shexr--parse-header'.")
-
-(defvar shexc-shexr--parse-base nil
-  "Dynamically bound by `shexc-shexr-parse' to the fence's own `BASE
-<ns>' header line, or nil if it has none -- see
-`shexc-shexr--parse-header'.")
-
-(defun shexc-shexr--resolve-relative-iri (iri)
-  "IRI is a `<...>' IRIREF's raw text -- resolved against the fence's own
-in-scope `shexc-shexr--parse-base' if it's relative (lacks a
-`scheme:' prefix); an absolute IRI passes through unchanged.  Mirrors
-`shexc-shexr--make-shortener's BASE branch, which only ever produces a
-relative form that round-trips back to the original via this exact
-resolution."
-  (if (and shexc-shexr--parse-base (not (string-match-p "\\`[A-Za-z][A-Za-z0-9+.-]*:" iri)))
-      (url-expand-file-name iri shexc-shexr--parse-base)
-    iri))
-
-(defun shexc-shexr--parse-iri-or-bnode ()
-  (shexc-shexr--skip-ws)
+(defun shexc-shexr--term-ref-text (term)
+  "TERM (a NamedNode or BlankNode) as the bare reference string this
+value-tree convention uses: the IRI itself, or `_:label' for a blank
+node -- the inverse of `shexc-shexr--ref-text'."
   (cond
-   ((looking-at "<\\([^>]*\\)>")
-    (goto-char (match-end 0))
-    (shexc-shexr--resolve-relative-iri (match-string-no-properties 1)))
-   ;; PN_CHARS-based BLANK_NODE_LABEL spans huge Unicode ranges (combining
-   ;; marks, CJK, emoji, ...) -- rather than reproduce that whole grammar,
-   ;; just exclude the handful of ASCII delimiters that can legitimately
-   ;; follow a label in this canonical shape: whitespace and `[](); ,'
-   ;; (`.' is deliberately allowed mid-token: BLANK_NODE_LABEL permits an
-   ;; internal `.', and since the upstream grammar already forbids a
-   ;; *trailing* one, a real label can never be confused with the
-   ;; following statement-terminating `.').
-   ((looking-at "_:\\([^][(); \t\n\r,]+\\)")
-    (goto-char (match-end 0)) (concat "_:" (match-string-no-properties 1)))
-   ((looking-at shexc-shexr--pname-re)
-    (goto-char (match-end 0))
-    (let* ((name (match-string-no-properties 1)) (local (match-string-no-properties 2))
-           (ns (cdr (assoc name shexc-shexr--parse-prefixes))))
-      (unless ns (shexc-shexr--fail "undeclared PREFIX `%s:'" name))
-      (concat ns local)))
-   (t (shexc-shexr--fail "expected an IRI, blank node label, or prefix:local"))))
+   ((rdf-model-named-node-p term) (rdf-model-named-node-value term))
+   ((rdf-model-blank-node-p term) (concat "_:" (rdf-model-blank-node-value term)))
+   (t (shexc-shexr--fail "expected an IRI or blank node, got %S" term))))
 
-(defun shexc-shexr--unescape-turtle-string (raw)
-  "Inverse of `shexc-shexr--turtle-string's escaping."
-  (replace-regexp-in-string
-   "\\\\\\(.\\)"
-   (lambda (m)
-     (let ((c (substring m 1)))
-       (cond ((string= c "\"") "\"") ((string= c "\\") "\\")
-             ((string= c "n") "\n") ((string= c "r") "\r")
-             ((string= c "t") "\t") ((string= c "b") "\b")
-             ((string= c "f") "\f") (t c))))
-   raw nil t)) ; LITERAL=t -- see shexc-shexr--turtle-string's comment
+(defun shexc-shexr--quads-by-predicate (quads)
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (q quads) (push q (gethash (rdf-model-quad-predicate q) table)))
+    table))
 
-(defun shexc-shexr--parse-string-token ()
-  (shexc-shexr--skip-ws)
-  (unless (looking-at "\"\\(\\(?:\\\\.\\|[^\"\\]\\)*\\)\"")
-    (shexc-shexr--fail "expected a string literal"))
-  (let ((raw (match-string-no-properties 1)))
-    (goto-char (match-end 0))
-    (shexc-shexr--unescape-turtle-string raw)))
+(defun shexc-shexr--list-node-p (store term)
+  "Whether TERM is the head of an RDF list -- `rdf:nil' itself, or
+something with its own `rdf:first' quad."
+  (or (equal term shexc-shexr--rdf-nil)
+      (rdf-model-dataset-match store term shexc-shexr--rdf-first)))
 
-(defun shexc-shexr--parse-number-token ()
-  (shexc-shexr--skip-ws)
-  (unless (looking-at "-?[0-9]+\\(\\.[0-9]+\\)?\\([eE][-+]?[0-9]+\\)?")
-    (shexc-shexr--fail "expected a number"))
-  (let ((text (match-string-no-properties 0)))
-    (goto-char (match-end 0))
-    (string-to-number text)))
-
-(defun shexc-shexr--parse-sx-name ()
-  (shexc-shexr--skip-ws)
-  (unless (looking-at "sx:\\([A-Za-z][A-Za-z0-9]*\\)")
-    (shexc-shexr--fail "expected an `sx:Name' token"))
-  (goto-char (match-end 0))
-  (match-string-no-properties 1))
-
-(defun shexc-shexr--parse-header ()
-  "Parse the fixed `@prefix sx: <...> .' line, then any number of
-ShExC-syntax `PREFIX name: <ns>'/`BASE <ns>' lines (no `@prefix'/
-trailing `.', in any order) -- the inverse of `shexc-shexr-serialize's
-header.  Populates `shexc-shexr--parse-prefixes'/`-parse-base' as a
-side effect, consumed by every subsequent
-`shexc-shexr--parse-iri-or-bnode' call."
-  (shexc-shexr--skip-ws)
-  (unless (looking-at "@prefix[ \t]+sx:[ \t]+<http://www\\.w3\\.org/ns/shex#>[ \t]*\\.")
-    (shexc-shexr--fail "expected `@prefix sx: <http://www.w3.org/ns/shex#> .'"))
-  (goto-char (match-end 0))
-  (let (prefixes base)
-    (catch 'done
-      (while t
-        (shexc-shexr--skip-ws)
-        (cond
-         ((looking-at "PREFIX[ \t]+\\([A-Za-z][A-Za-z0-9_-]*\\):[ \t]*<\\([^>]*\\)>")
-          (goto-char (match-end 0))
-          (push (cons (match-string-no-properties 1) (match-string-no-properties 2)) prefixes))
-         ((looking-at "BASE[ \t]+<\\([^>]*\\)>")
-          (goto-char (match-end 0))
-          (setq base (match-string-no-properties 1)))
-         (t (throw 'done nil)))))
-    (setq shexc-shexr--parse-prefixes (nreverse prefixes)
-          shexc-shexr--parse-base base)))
-
-(defun shexc-shexr--parse-typed-literal ()
-  "A quoted string, optionally suffixed by `^^<iri>' or `@lang' -- a
-value-set literal entry, returned as a `:value'/`:type'/`:language' plist."
-  (let ((text (shexc-shexr--parse-string-token)))
-    (cond
-     ((looking-at "\\^\\^") (goto-char (match-end 0))
-      (list :value text :type (shexc-shexr--parse-iri-or-bnode)))
-     ((looking-at "@\\([A-Za-z][A-Za-z0-9-]*\\)") (goto-char (match-end 0))
-      (list :value text :language (match-string-no-properties 1)))
-     (t (list :value text)))))
-
-(defun shexc-shexr--parse-plain-string ()
-  (unless (looking-at "\"") (shexc-shexr--fail "expected a plain string literal"))
-  (shexc-shexr--parse-string-token))
-
-(defun shexc-shexr--parse-value-set-entry ()
-  (shexc-shexr--skip-ws)
-  (cond
-   ((looking-at "true\\_>") (goto-char (match-end 0))
-    (list :value "true" :type shexc-shexr--xsd-boolean-iri))
-   ((looking-at "false\\_>") (goto-char (match-end 0))
-    (list :value "false" :type shexc-shexr--xsd-boolean-iri))
-   ((looking-at "\"") (shexc-shexr--parse-typed-literal))
-   ;; a bare IRI/blank-node value-set entry is a plain string -- never a
-   ;; reference to a hoisted same-document object (value-set entries are
-   ;; never `:id'-bearing), so resolved immediately, not deferred.
-   ((looking-at shexc-shexr--iri-or-bnode-start-re) (shexc-shexr--parse-iri-or-bnode))
-   (t (shexc-shexr--fail "expected a value-set entry"))))
-
-(defun shexc-shexr--parse-rdf-value (&optional mode)
-  "Parse one value at point.  MODE mirrors
-`shexc-shexr--key-string-mode': `value' for a NodeConstraint value-set/
-Annotation-object entry, `plain' for plain text, `literal-iri' for a
-bare `<iri>'/`_:label' resolved immediately to a plain string -- never
-deferred against the hoist table, since (per `shexc-shexr--key-string-mode')
-a `literal-iri' property can never hold a same-document-hoisted-object
-reference, so consulting the hoist table could only go wrong (e.g. the
-IRI happens to coincide with an unrelated hoisted statement's id) --
-anything else (including the usual `ref') falls through to the default
-dispatch, which always defers a bare `<iri>'/`_:label' against the
-hoist table (see `shexc-shexr--resolve').  Inline objects, RDF lists,
-numbers, and booleans are recognized by their own syntax regardless of
-MODE, and a bare `\"...\"' token never needs to be expected here at all
-\(every property whose value could syntactically be a quoted string
-uses `plain' or `value' mode; see `shexc-shexr--key-string-mode')."
-  (shexc-shexr--skip-ws)
-  (cond
-   ((looking-at "\\[") (shexc-shexr--parse-inline-object))
-   ((looking-at "(") (shexc-shexr--parse-rdf-list mode))
-   ((eq mode 'value) (shexc-shexr--parse-value-set-entry))
-   ((looking-at "true\\_>") (goto-char (match-end 0)) t)
-   ((looking-at "false\\_>") (goto-char (match-end 0)) nil)
-   ((looking-at "-?[0-9]") (shexc-shexr--parse-number-token))
-   ((eq mode 'plain) (shexc-shexr--parse-plain-string))
-   ((and (eq mode 'literal-iri) (looking-at shexc-shexr--iri-or-bnode-start-re))
-    (shexc-shexr--parse-iri-or-bnode))
-   ((looking-at shexc-shexr--iri-or-bnode-start-re) (shexc-shexr--make-ref (shexc-shexr--parse-iri-or-bnode)))
-   (t (shexc-shexr--fail "expected a value"))))
-
-(defun shexc-shexr--parse-rdf-list (mode)
-  (shexc-shexr--consume "(")
+(defun shexc-shexr--decode-rdf-list (store mode term)
+  "Walk the `rdf:first'/`rdf:rest' chain headed at TERM, decoding each
+item per MODE via `shexc-shexr--decode-value'."
   (let (items)
-    (while (progn (shexc-shexr--skip-ws) (not (looking-at ")")))
-      (push (shexc-shexr--parse-rdf-value mode) items))
-    (shexc-shexr--consume ")")
+    (while (not (equal term shexc-shexr--rdf-nil))
+      (let ((first (rdf-model-dataset-match store term shexc-shexr--rdf-first))
+            (rest (rdf-model-dataset-match store term shexc-shexr--rdf-rest)))
+        (unless (and (= (length first) 1) (= (length rest) 1))
+          (shexc-shexr--fail "malformed RDF list at %S" term))
+        (push (shexc-shexr--decode-value store mode (rdf-model-quad-object (car first))) items)
+        (setq term (rdf-model-quad-object (car rest)))))
     (nreverse items)))
 
-(defun shexc-shexr--parse-comma-list ()
-  "`sx:extra's comma-separated object list -- always bare predicate IRIs,
-parsed directly rather than through `shexc-shexr--parse-rdf-value', since
-an `extra' target is never itself a hoisted same-document object."
-  (let ((items (list (shexc-shexr--parse-iri-or-bnode))))
-    (while (progn (shexc-shexr--skip-ws) (looking-at ","))
-      (goto-char (1+ (point)))
-      (push (shexc-shexr--parse-iri-or-bnode) items))
-    (nreverse items)))
+(defun shexc-shexr--decode-literal (lit)
+  "LIT (an `rdf-model-literal') as a value-set/Annotation-object entry
+plist (`:value' plus `:type'/`:language' when not the RDF-implicit
+default) -- the inverse of `shexc-shexr--serialize-literal'."
+  (let* ((value (rdf-model-literal-value lit))
+         (lang (rdf-model-literal-language lit))
+         (dt (rdf-model-literal-datatype lit))
+         (dt-iri (and dt (rdf-model-named-node-value dt))))
+    (cond
+     (lang (list :value value :language lang))
+     ((and dt-iri (not (string= dt-iri shexc-shexr--xsd-string-iri)))
+      (list :value value :type dt-iri))
+     (t (list :value value)))))
 
-(defun shexc-shexr--parse-predicate-object-list ()
-  "Parse `a sx:Type ; sx:prop val ; ...' at point (stopping right before
-the statement-terminating `.'/enclosing `]'), tolerating any order among
-the `;'-separated pairs.  Returns a raw plist (`:type' plus whatever
-properties were present, each value possibly still containing deferred
-reference markers -- see the Commentary above)."
-  (shexc-shexr--skip-ws)
-  (unless (looking-at "a\\_>") (shexc-shexr--fail "expected `a sx:Type'"))
-  (goto-char (match-end 0))
-  (let ((type (shexc-shexr--parse-sx-name))
-        (props nil))
-    (while (progn (shexc-shexr--skip-ws) (looking-at ";"))
-      (goto-char (1+ (point)))
-      (shexc-shexr--skip-ws)
-      (let* ((key-name (shexc-shexr--parse-sx-name))
-             (kw (shexc-shexr--key-from-label-name key-name)))
-        (setq props
-              (plist-put props kw
-                         (if (string= key-name "extra")
-                             (shexc-shexr--parse-comma-list)
-                           (shexc-shexr--parse-rdf-value (shexc-shexr--key-string-mode type kw)))))))
-    (append (list :type type) props)))
+(defun shexc-shexr--numeric-datatype-p (iri)
+  (member iri '("http://www.w3.org/2001/XMLSchema#integer"
+                "http://www.w3.org/2001/XMLSchema#decimal"
+                "http://www.w3.org/2001/XMLSchema#double")))
 
-(defun shexc-shexr--parse-inline-object ()
-  "Parse `[ a sx:Type ; ... ]' at point.  A `sx:Ref'-typed object (see
-`shexc-shexr--serialize-ref') is unwrapped immediately to its bare IRI/
-label text -- never deferred, and never confusable with a same-document
-hoisted-object reference, regardless of what else the document hoists."
-  (shexc-shexr--consume "[")
-  (let ((body (shexc-shexr--parse-predicate-object-list)))
-    (shexc-shexr--consume "]")
-    (if (equal (plist-get body :type) "Ref")
-        (let ((id-val (plist-get body :id)))
-          (if (shexc-shexr--ref-p id-val) (cdr id-val) id-val))
-      body)))
+(defun shexc-shexr--decode-value (store mode term)
+  "Decode one RDF TERM per MODE (mirrors `shexc-shexr--key-string-mode')."
+  (let ((dt (and (rdf-model-literal-p term) (rdf-model-literal-datatype term))))
+    (cond
+     ;; Numbers/non-`value'-mode booleans are recognized by the term's
+     ;; own shape before MODE is consulted -- mirrors `shexc-shexr--flat-value'.
+     ((and dt (not (eq mode 'value)) (shexc-shexr--numeric-datatype-p (rdf-model-named-node-value dt)))
+      (string-to-number (rdf-model-literal-value term)))
+     ((and dt (not (eq mode 'value)) (string= (rdf-model-named-node-value dt) shexc-shexr--xsd-boolean-iri))
+      (if (string= (rdf-model-literal-value term) "true") t shexc-shexr--omit))
+     ;; `literal-iri' is read as plain identifier text unconditionally,
+     ;; *never* dereferenced -- unlike every other mode below, it must
+     ;; not even check the term's own `rdf:type': a `:predicate'/
+     ;; `:datatype'/`:id' value's very IRI is always also some node's
+     ;; subject elsewhere in the graph (`:id' especially -- it names the
+     ;; node it's a property of), so treating it as dereferenceable
+     ;; would self-recurse forever.  See `shexc-shexr--key-string-mode'.
+     ((eq mode 'literal-iri) (shexc-shexr--term-ref-text term))
+     ((rdf-model-literal-p term)
+      (cond
+       ((eq mode 'plain) (rdf-model-literal-value term))
+       ((eq mode 'value) (shexc-shexr--decode-literal term))
+       (t (shexc-shexr--fail "expected a reference, got literal %S" term))))
+     (t
+      ;; A non-literal term can itself be a typed object (`Language'/
+      ;; `IriStem'/`LiteralStemRange'/`Wildcard'/...), not just a bare
+      ;; IRI/blank-node reference -- dereferenced regardless of MODE,
+      ;; mirroring `shexc-shexr--flat-value''s unconditional
+      ;; object-inlining for any plist-valued property (e.g. a `:stem'
+      ;; that's a `Wildcard' even though `:stem' is otherwise `plain'
+      ;; mode, or an Iri-flavored `:exclusions' entry -- `value' mode --
+      ;; that's an `IriStem').  Only `ref' mode additionally recognizes
+      ;; the `sx:Ref' wrapper -- a `value'-mode entry is never
+      ;; `sx:Ref'-wrapped (no same-document-object ambiguity to guard
+      ;; against -- see this file's existing Commentary on why
+      ;; value-set entries are never `:id'-bearing).
+      (let ((type-quads (rdf-model-dataset-match store term shexc-shexr--rdf-type)))
+        (cond
+         ((null type-quads) (shexc-shexr--term-ref-text term))
+         ((and (eq mode 'ref) (equal (rdf-model-quad-object (car type-quads)) shexc-shexr--sx-ref))
+          (let ((id-quads (rdf-model-dataset-match store term shexc-shexr--sx-id)))
+            (unless (= (length id-quads) 1) (shexc-shexr--fail "sx:Ref node missing sx:id at %S" term))
+            (shexc-shexr--decode-value store 'literal-iri (rdf-model-quad-object (car id-quads)))))
+         (t (shexc-shexr--decode-node store term))))))))
 
-(defun shexc-shexr--parse-subject ()
-  "Returns the symbol `shexc-shexr--root' for the anonymous `[]' Schema
-subject, or an IRI/blank-node-label string for a hoisted subject."
-  (shexc-shexr--skip-ws)
-  (if (looking-at "\\[\\]")
-      (progn (goto-char (match-end 0)) 'shexc-shexr--root)
-    (shexc-shexr--parse-iri-or-bnode)))
+(defvar shexc-shexr--decode-memo nil
+  "Dynamically bound by `shexc-shexr-parse' to a hash table memoizing
+`shexc-shexr--decode-node' by subject term, both for efficiency (a
+node referenced from multiple places is only decoded once) and to
+guard against a cyclic reference (the in-progress sentinel below).")
 
-(defun shexc-shexr--resolve (raw hoist-table)
-  "Recursively replace every deferred ref marker in RAW with either the
-fully-resolved content of the hoisted statement it points to (`:id'
-restored), or, if HOIST-TABLE has no matching statement, the bare IRI/
-label text itself."
-  (cond
-   ((shexc-shexr--ref-p raw)
-    (let* ((id (cdr raw)) (target (assoc id hoist-table)))
-      (if target
-          (plist-put (shexc-shexr--resolve (cdr target) hoist-table) :id id)
-        id)))
-   ((and (consp raw) (keywordp (car raw)))
-    (let (out (tail raw))
-      (while tail
-        (setq out (plist-put out (car tail) (shexc-shexr--resolve (cadr tail) hoist-table)))
-        (setq tail (cddr tail)))
-      out))
-   ((listp raw) (mapcar (lambda (x) (shexc-shexr--resolve x hoist-table)) raw))
-   (t raw)))
+(defconst shexc-shexr--decode-in-progress '--shexc-shexr-decode-in-progress--)
+(defconst shexc-shexr--decode-not-memoized '--shexc-shexr-decode-not-memoized--)
+
+(defun shexc-shexr--decode-node-properties (store subject)
+  "SUBJECT's properties in STORE (including `:id', if it has an explicit
+`sx:id' property), excluding its `rdf:type' (returned separately as
+TYPE-NAME) -- shared by `shexc-shexr--decode-node' (which adds
+`:type') and `shexc-shexr-parse' (which builds the Schema's own
+wrapper instead).  Returns (TYPE-NAME . PROPERTY-PLIST)."
+  (let* ((quads (rdf-model-dataset-match store subject))
+         (type-quads (seq-filter (lambda (q) (equal (rdf-model-quad-predicate q) shexc-shexr--rdf-type)) quads))
+         (other-quads (seq-remove (lambda (q) (equal (rdf-model-quad-predicate q) shexc-shexr--rdf-type)) quads)))
+    (unless (= (length type-quads) 1)
+      (shexc-shexr--fail "expected exactly one rdf:type for %S, found %d" subject (length type-quads)))
+    (let* ((type-name (shexc-shexr--type-local-name (rdf-model-quad-object (car type-quads))))
+           (by-predicate (shexc-shexr--quads-by-predicate other-quads))
+           result)
+      (maphash
+       (lambda (predicate matching-quads)
+         (if (equal predicate shexc-shexr--sx-extra)
+             (setq result
+                   (plist-put result :extra
+                              (mapcar (lambda (q) (shexc-shexr--decode-value store 'literal-iri (rdf-model-quad-object q)))
+                                      matching-quads)))
+           (let* ((key (shexc-shexr--key-from-label-name
+                        (substring (rdf-model-named-node-value predicate) (length shexc-shexr--sx-ns))))
+                  (mode (shexc-shexr--key-string-mode type-name key))
+                  (objects (mapcar #'rdf-model-quad-object matching-quads))
+                  (value (if (and (= (length objects) 1) (not (shexc-shexr--list-node-p store (car objects))))
+                             (shexc-shexr--decode-value store mode (car objects))
+                           (if (= (length objects) 1)
+                               (shexc-shexr--decode-rdf-list store mode (car objects))
+                             (mapcar (lambda (o) (shexc-shexr--decode-value store mode o)) objects)))))
+             (unless (eq value shexc-shexr--omit)
+               (setq result (plist-put result key value))))))
+       by-predicate)
+      (cons type-name result))))
+
+(defun shexc-shexr--decode-node (store subject)
+  "Decode SUBJECT's triples in STORE into a value-tree node: `:type'
+\(from its one mandatory `rdf:type') plus every other property,
+including `:id' if SUBJECT has an explicit `sx:id' property (see
+`shexc-shexr--key-string-mode''s `:id' case for why this needs to be a
+real property, not inferred from SUBJECT's own IRI-vs-blank-node
+shape -- a deliberately blank-node-labeled `:id' \(ShExC's `_:S2 {
+... }') and a purely anonymous inline `[ ... ]' are graph-shape-
+identical otherwise)."
+  (let ((memoized (gethash subject shexc-shexr--decode-memo shexc-shexr--decode-not-memoized)))
+    (cond
+     ((eq memoized shexc-shexr--decode-in-progress)
+      (shexc-shexr--fail "cyclic ShExR reference involving %S" subject))
+     ((not (eq memoized shexc-shexr--decode-not-memoized)) memoized)
+     (t
+      (puthash subject shexc-shexr--decode-in-progress shexc-shexr--decode-memo)
+      (pcase-let* ((`(,type-name . ,props) (shexc-shexr--decode-node-properties store subject))
+                   (result (append (list :type type-name) props)))
+        (puthash subject result shexc-shexr--decode-memo)
+        result)))))
 
 ;;;###autoload
 (defun shexc-shexr-parse (text)
-  "Parse TEXT (canonical ShExR Turtle, see this file's Commentary) into a
+  "Parse TEXT (ShExR Turtle -- any valid Turtle expressing the `sx:'
+vocabulary, not just this file's own canonical output) into a
 value-tree, the inverse of `shexc-shexr-serialize'.  Signals a
 `shexc-shexr-parse-error' (never an uncaught generic Lisp error) on
-malformed or non-canonical input."
-  (with-temp-buffer
-    (insert text)
-    (goto-char (point-min))
-    (let (shexc-shexr--parse-prefixes shexc-shexr--parse-base root hoist-table)
-      (shexc-shexr--parse-header)
-      (shexc-shexr--skip-ws)
-      (while (not (eobp))
-        (let* ((subj (shexc-shexr--parse-subject))
-               (raw (shexc-shexr--parse-predicate-object-list)))
-          (shexc-shexr--skip-ws)
-          (unless (looking-at "\\.") (shexc-shexr--fail "expected `.' terminating a top-level statement"))
-          (goto-char (1+ (point)))
-          (if (eq subj 'shexc-shexr--root)
-              (if root (shexc-shexr--fail "more than one anonymous `[]' top-level subject")
-                (setq root raw))
-            (push (cons subj raw) hoist-table))
-          (shexc-shexr--skip-ws)))
-      (unless root (shexc-shexr--fail "no anonymous `[]' Schema root statement found"))
-      (shexc-shexr--resolve root hoist-table))))
+malformed input."
+  (condition-case err
+      (let* ((shexc-shexr--decode-memo (make-hash-table :test #'equal))
+             (store (rdf-turtle-parse-string text))
+             (schema-quads (rdf-model-dataset-match store nil shexc-shexr--rdf-type shexc-shexr--sx-schema)))
+        (unless (= (length schema-quads) 1)
+          (shexc-shexr--fail "expected exactly one `a sx:Schema' statement, found %d" (length schema-quads)))
+        (pcase-let* ((`(,_type-name . ,props)
+                      (shexc-shexr--decode-node-properties store (rdf-model-quad-subject (car schema-quads)))))
+          (append (list :context shexc-shexr--context-iri :type "Schema") props)))
+    (shexc-shexr-parse-error (signal (car err) (cdr err)))
+    (error (signal 'shexc-shexr-parse-error (list (error-message-string err))))))
 
 (provide 'shexc-shexr)
 
