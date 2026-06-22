@@ -265,7 +265,11 @@ of the nearest enclosing `blank_node_property_list'/`collection'."
 
    :language 'turtle
    :feature 'bracket
-   '((["{" "}" "[" "]" "(" ")"]) @font-lock-bracket-face)
+   ;; No "{" "}" -- Turtle's grammar has no such tokens at all (not even
+   ;; unused), so querying for them raises a hard `treesit-query-error'
+   ;; at capture time (lazy validation -- compiling the query alone
+   ;; doesn't catch it).
+   '((["[" "]" "(" ")"]) @font-lock-bracket-face)
 
    :language 'turtle
    :feature 'delimiter

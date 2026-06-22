@@ -59,8 +59,30 @@
 (require 'flymake)
 (require 'pcase)
 (require 'seq)
+(require 'rdf-core)
+(require 'xref)
 
 (declare-function transient-append-suffix "transient")
+
+;; `turtle-ts-mode'/`json-ts-mode' are `require'd lazily, only once
+;; `treesit-ready-p' (quietly) confirms the grammar is actually
+;; available -- see `shexc-ts-mode-convert--require-embedded-mode'.
+;; Merely loading either file unconditionally would be enough to
+;; trigger the very "grammar unavailable" warning this is trying to
+;; avoid: both files' own top-level `treesit-font-lock-rules' calls
+;; try to compile their queries against the language right away,
+;; which warns just like an unguarded `treesit-ready-p' call would --
+;; confirmed empirically, including that it happens a second time on
+;; every subsequent `shexc-ts-mode' buffer if this file's own setup
+;; code *also* called `treesit-ready-p' without its QUIET argument.
+;; These `defvar's are forward declarations only (no value), just so
+;; the byte-compiler doesn't warn about a free variable reference
+;; further down in this file.
+(defvar turtle-ts-mode--font-lock-settings)
+(defvar turtle-ts-mode--font-lock-feature-list)
+(defvar turtle-ts-mode--indent-rules)
+(defvar json-ts-mode--font-lock-settings)
+(defvar json-ts--indent-rules)
 
 (defgroup shexc-convert nil
   "ShExC <-> ShExJ/ShExR in-place conversion for `shexc-ts-mode'."
@@ -156,7 +178,16 @@ literal `*/'.  `shexc-ts-mode-convert--unescape-content' reverses this."
             kind id (shexc-ts-mode-convert--escape-content body) kind id)))
 
 (defun shexc-ts-mode-convert--comment-node-at (pos)
-  (let ((node (treesit-node-at pos)))
+  ;; Explicit `\='shexc -- `treesit-node-at' with no language guesses
+  ;; via `treesit-language-at', which (once `shexc-ts-mode-convert--
+  ;; setup-fence-embedding' has run) reports `turtle'/`json' for a
+  ;; position inside a fence's *content* -- exactly the position this
+  ;; is most often called at (point left inside the fence by a
+  ;; previous conversion).  Confirmed empirically: omitting this made
+  ;; `shexc-ts-mode-convert-at-point' stop recognizing point was
+  ;; inside a SHEXR fence at all, falling through to "convert the
+  ;; whole buffer to ShExJ" instead of closing the ShExR->ShExC loop.
+  (let ((node (treesit-node-at pos 'shexc)))
     (and node (string= (treesit-node-type node) "comment") node)))
 
 (defun shexc-ts-mode-convert--fence-at (pos)
@@ -198,7 +229,7 @@ the fence, where `shexc-shexj-buffer-directive-ctx' could no longer
 find it to shorten IRIs when converting back."
   (let ((end (point-min)))
     (catch 'done
-      (dolist (c (treesit-node-children (treesit-buffer-root-node) t))
+      (dolist (c (treesit-node-children (treesit-buffer-root-node 'shexc) t))
         (if (member (treesit-node-type c) '("base_decl" "prefix_decl" "import_decl"))
             (setq end (treesit-node-end c))
           (throw 'done nil))))
@@ -233,7 +264,7 @@ skipped since they're Lisp singletons, not reliably locatable by `eq'
 on the output side (see shexc-shexr.el/shexc-shexj.el's `--mark')."
   (when (and (<= (treesit-node-start root-node) orig-point)
              (>= (treesit-node-end root-node) orig-point))
-    (let ((n (treesit-node-at orig-point)))
+    (let ((n (treesit-node-at orig-point 'shexc)))
       (catch 'found
         (while n
           (let ((val (gethash (cons (treesit-node-start n) (treesit-node-end n))
@@ -263,7 +294,7 @@ thing\" across conversion; see `shexc-ts-mode-convert--locate-target'."
   (let* ((orig-point (point))
          (beg (if (use-region-p) (region-beginning) (point)))
          (end (if (use-region-p) (region-end) (point)))
-         (probe (treesit-node-at beg))
+         (probe (treesit-node-at beg 'shexc))
          (decl (treesit-parent-until
                 probe
                 (lambda (n) (and (string= (treesit-node-type n) "shape_expr_decl")
@@ -276,7 +307,7 @@ thing\" across conversion; see `shexc-ts-mode-convert--locate-target'."
                (located (shexc-ts-mode-convert--locate-target decl orig-point)))
           (list (treesit-node-start decl) (treesit-node-end decl) tree (car located) (cdr located)))
       (let* ((tree (shexc-shexj-compile-buffer))
-             (located (shexc-ts-mode-convert--locate-target (treesit-buffer-root-node) orig-point)))
+             (located (shexc-ts-mode-convert--locate-target (treesit-buffer-root-node 'shexc) orig-point)))
         (list (shexc-ts-mode-convert--directives-end) (point-max) tree (car located) (cdr located))))))
 
 (defun shexc-ts-mode-convert--indent-fence-opening-line (beg)
@@ -645,7 +676,7 @@ it actually parses as one -- the candidates `shexc-ts-mode-convert--
 flymake-fence-errors' checks."
   (seq-filter
    (lambda (node) (string-prefix-p "/* shexc-ts-mode:BEGIN-" (treesit-node-text node t)))
-   (treesit-query-capture (treesit-buffer-root-node) '((comment) @c) nil nil t)))
+   (treesit-query-capture (treesit-buffer-root-node 'shexc) '((comment) @c) nil nil t)))
 
 (defun shexc-ts-mode-convert--flymake-fence-errors ()
   "One flymake diagnostic per malformed fenced ShExJ/ShExR block in the
@@ -695,10 +726,412 @@ ShExR never shorten), directly comparable against
           (push (plist-get decl :id) labels))))
     labels))
 
+;; ---------------------------------------------------------------------
+;; Embedded highlighting: a real `turtle'/`json' tree-sitter parser,
+;; ranged to just a fence's content, so a ShExR/ShExJ fence is
+;; font-locked (and indented) as actual Turtle/JSON rather than one
+;; flat `font-lock-comment-face' span.
+;;
+;; The host `shexc' grammar has no internal structure for a fence's
+;; content -- `comment' is a single opaque `extras' token (see this
+;; file's top Commentary), so a `treesit-range-rules' QUERY (a
+;; tree-sitter query against the host's own parse tree) can't target a
+;; sub-range of it.  This uses that function's other form instead: a
+;; plain Lisp function that sets every embedded parser's
+;; `treesit-parser-set-included-ranges' directly, scanning fence
+;; comments via the same `shexc-ts-mode-convert--fence-candidate-
+;; comments'/`--fence-re' this file already uses for flymake -- so the
+;; embedded range is always exactly the BEGIN/END-delimited content,
+;; regardless of how many digits the fence id happens to have (a fixed
+;; `:offset' trim, the usual technique for e.g. HTML's `<script>'/
+;; `<style>' tags, can't express that here).
+;;
+;; Merged into the buffer's *existing* (single-language) settings
+;; rather than replacing them, since `shexc-ts-mode-convert--setup'
+;; runs from `shexc-ts-mode-hook' -- after `shexc-ts-mode' has already
+;; called `treesit-major-mode-setup' once with its own settings alone.
+;; The embedded languages' font-lock rules are prepended, not appended:
+;; `shexc-ts-mode--font-lock-settings' has its own unconditional
+;; `(comment) @font-lock-comment-face' rule with no `:override', which
+;; would otherwise win first (it's a `:language \='shexc' rule, so it
+;; still matches the whole comment node regardless of any range
+;; restriction placed on the *embedded* parser) and paint right over
+;; whatever the embedded rules would have set -- with no `:override'
+;; either, fontification skips spans a prior rule already painted, so
+;; running the embedded rules first lets that earlier rule's own
+;; capture simply not repaint whatever they already painted.
+;;
+;; That earlier rule turns out *not* to repaint what's left over
+;; either, though (confirmed empirically): once the embedded parser's
+;; pass has claimed part of a comment node's span, the BEGIN/END
+;; marker lines -- never claimed by the embedded parser, never painted
+;; by anything -- are left with no face at all, not even `font-lock-
+;; comment-face'.  `shexc-ts-mode-convert--fontify-fence-markers' is a
+;; small dedicated rule, appended *last* with `:override t', that
+;; explicitly repaints just those marker-line spans.
+
+(defconst shexc-ts-mode-convert--fence-embedded-language
+  '(("SHEXR" . turtle) ("SHEXJ" . json))
+  "Which tree-sitter language embeds inside each fence KIND's content.")
+
+;; `treesit-parser-list' (and therefore `treesit-buffer-root-node'/
+;; `treesit-node-at' called with no explicit language, as the rest of
+;; `shexc-ts-mode'/`shexc-ts-mode-convert.el'/`shexc-shexj.el' all do,
+;; assuming there's exactly one parser) orders parsers *most-recently-
+;; created first* -- confirmed empirically: creating a second parser
+;; for an embedded language made it, not `shexc', the implicit default
+;; everywhere, corrupting every one of those call sites (including
+;; ones in the ShExC->ShExJ compiler itself) the moment this feature
+;; activated.
+;;
+;; Tagging the embedded parsers (so they're excluded from the default,
+;; untagged `treesit-parser-list') looks like the obvious fix, but
+;; breaks the *other* direction instead: `treesit-font-lock-rules''
+;; `:language' dispatch -- confirmed empirically too -- only finds an
+;; *untagged* parser for that language, so a tagged embedded parser
+;; never gets its rules applied at all (its content kept the host's
+;; flat `font-lock-comment-face', not a single embedded-language face
+;; anywhere).  So the embedded parsers must stay untagged, and `shexc'
+;; must instead be re-established as the newest -- deleted and
+;; recreated *after* them, right before `treesit-major-mode-setup''s
+;; own `treesit-primary-parser' default would otherwise go stale.
+
+(defun shexc-ts-mode-convert--reclaim-primary-parser-order ()
+  "Recreate the `shexc' parser so it's newest (hence first in
+`treesit-parser-list', the implicit default `treesit-buffer-root-node'/
+`treesit-node-at' use) again, after the embedded parsers below were
+created -- see this section's Commentary just above."
+  (let ((old (car (treesit-parser-list nil 'shexc))))
+    (when old (treesit-parser-delete old)))
+  (setq-local treesit-primary-parser (treesit-parser-create 'shexc)))
+
+(defun shexc-ts-mode-convert--fence-content-bounds (node)
+  "Return (KIND CONTENT-BEG CONTENT-END) for fence comment NODE (as
+returned by `shexc-ts-mode-convert--fence-candidate-comments'), or nil
+if NODE's BEGIN/END markers don't match.  Unlike `shexc-ts-mode-convert
+--fence-at', CONTENT-BEG/-END exclude the `BEGIN-KIND ID'/`END-KIND ID'
+marker lines themselves (and their adjacent newlines) -- exactly the
+span an embedded parser for KIND's content language should see."
+  (let* ((beg (treesit-node-start node))
+         (text (treesit-node-text node t)))
+    (when (string-match shexc-ts-mode-convert--fence-re text)
+      (list (match-string 1 text)
+            (+ beg (match-beginning 3))
+            (+ beg (match-end 3))))))
+
+(defvar-local shexc-ts-mode-convert--fence-embedded-ready-languages nil
+  "Subset of `shexc-ts-mode-convert--fence-embedded-language''s values
+whose tree-sitter grammar is actually available in this session --
+computed once in `shexc-ts-mode-convert--setup-fence-embedding', so
+the range-update function below never calls `treesit-parser-create'
+for a language with no grammar installed.")
+
+(defun shexc-ts-mode-convert--update-embedded-ranges (&rest _start-end)
+  "Set every ready embedded-language parser's included ranges to the
+content spans of its kind of fence in the current buffer.  This is the
+function form of a `treesit-range-rules' QUERY (see that function's
+docstring: \"QUERY can also be a function that takes two arguments,
+START and END ... It is OK for this function to set ranges in a larger
+region\") -- always recomputes across the whole buffer (cheap; there
+are normally only a handful of fences) rather than trying to
+incrementally honor its own START/END arguments.
+
+A parser given an explicit-but-empty ranges list still parses nothing,
+unlike `nil' (which means \"parse the whole buffer\" -- see
+`treesit-parser-set-included-ranges') -- so a language with zero
+fences of its kind right now still gets a real, non-nil, zero-width
+range rather than being left to fall back to parsing everything."
+  (dolist (lang shexc-ts-mode-convert--fence-embedded-ready-languages)
+    (let (ranges)
+      (dolist (node (shexc-ts-mode-convert--fence-candidate-comments))
+        (pcase (shexc-ts-mode-convert--fence-content-bounds node)
+          (`(,kind ,beg ,end)
+           (when (eq (cdr (assoc kind shexc-ts-mode-convert--fence-embedded-language)) lang)
+             (push (cons beg end) ranges)))))
+      (treesit-parser-set-included-ranges
+       (treesit-parser-create lang)
+       (or (sort ranges (lambda (a b) (< (car a) (car b))))
+           (list (cons (point-min) (point-min))))))))
+
+(defun shexc-ts-mode-convert--language-at-point (point)
+  "`treesit-language-at-point-function' for `shexc-ts-mode': `turtle'/
+`json' inside the matching kind of fence's content, else `shexc'."
+  (let ((node (treesit-node-at point 'shexc)))
+    (or (and node (string= (treesit-node-type node) "comment")
+             (pcase (shexc-ts-mode-convert--fence-content-bounds node)
+               (`(,kind ,beg ,end)
+                (and (<= beg point) (< point end)
+                     (let ((lang (cdr (assoc kind shexc-ts-mode-convert--fence-embedded-language))))
+                       (and (memq lang shexc-ts-mode-convert--fence-embedded-ready-languages) lang))))))
+        'shexc)))
+
+(defun shexc-ts-mode-convert--fontify-fence-markers (node override start end &rest _)
+  "Paint `font-lock-comment-face' on a fence comment NODE's BEGIN/END
+marker lines only -- the embedded turtle/json parser already painted
+its content (see this section's top Commentary).  A `treesit-font-
+lock-rules' capture function (NODE/OVERRIDE/START/END per that
+function's docstring), registered with `:override t' last, so it
+always applies regardless of pass ordering: the plain, unconditional
+`(comment) @font-lock-comment-face' rule in `shexc-ts-mode--font-lock-
+settings' -- run earlier, for every comment including fence ones --
+turns out not to repaint a fence's marker lines at all once the
+embedded parser has claimed (and painted) the rest of that same
+comment node's span (confirmed empirically: the marker lines were
+left with no face whatsoever, not even `font-lock-comment-face',
+despite that earlier rule's own capture covering the *whole* node).
+A non-fence comment is untouched here (already fully painted by that
+earlier rule) -- `shexc-ts-mode-convert--fence-content-bounds' returns
+nil for it."
+  (pcase (shexc-ts-mode-convert--fence-content-bounds node)
+    (`(,_kind ,content-beg ,content-end)
+     (treesit-fontify-with-override
+      (treesit-node-start node) content-beg 'font-lock-comment-face override start end)
+     (treesit-fontify-with-override
+      content-end (treesit-node-end node) 'font-lock-comment-face override start end))))
+
+(defun shexc-ts-mode-convert--merge-feature-lists (&rest lists)
+  "Merge LISTS (each a `treesit-font-lock-feature-list') level by level."
+  (let (result)
+    (dotimes (i (apply #'max (mapcar #'length lists)))
+      (push (delete-dups (apply #'append (mapcar (lambda (l) (nth i l)) lists))) result))
+    (nreverse result)))
+
+(defconst shexc-ts-mode-convert--fence-embedded-mode-feature
+  '((turtle . turtle-ts-mode) (json . json-ts-mode))
+  "Which Emacs feature/file to `require' for each embedded LANG, lazily
+\(see `shexc-ts-mode-convert--require-embedded-mode').")
+
+(defun shexc-ts-mode-convert--require-embedded-mode (lang)
+  "If LANG's tree-sitter grammar is quietly confirmed available,
+`require' its mode file and return LANG; otherwise return nil without
+ever loading that file or emitting a warning -- see this section's top
+Commentary on why both matter (either one alone still warns)."
+  (and (treesit-ready-p lang t)
+       (require (cdr (assq lang shexc-ts-mode-convert--fence-embedded-mode-feature)) nil t)
+       lang))
+
+(defun shexc-ts-mode-convert--setup-fence-embedding ()
+  "Give every fence's content a real, ranged `turtle'/`json' tree-sitter
+parser of its own for font-lock and indentation, merged into the
+buffer's existing (single-language) settings -- see this section's
+top Commentary."
+  (setq shexc-ts-mode-convert--fence-embedded-ready-languages
+        (delq nil (mapcar (lambda (kind+lang)
+                             (shexc-ts-mode-convert--require-embedded-mode (cdr kind+lang)))
+                           shexc-ts-mode-convert--fence-embedded-language)))
+  (when shexc-ts-mode-convert--fence-embedded-ready-languages
+    (let (font-lock-settings-by-lang indent-rules-by-lang feature-lists)
+      (when (memq 'turtle shexc-ts-mode-convert--fence-embedded-ready-languages)
+        (push turtle-ts-mode--font-lock-settings font-lock-settings-by-lang)
+        (push turtle-ts-mode--indent-rules indent-rules-by-lang)
+        (push turtle-ts-mode--font-lock-feature-list feature-lists))
+      (when (memq 'json shexc-ts-mode-convert--fence-embedded-ready-languages)
+        (push json-ts-mode--font-lock-settings font-lock-settings-by-lang)
+        (push json-ts--indent-rules indent-rules-by-lang)
+        (push '((comment constant number pair string)
+                (escape-sequence) (bracket delimiter error))
+              feature-lists))
+      (setq-local treesit-font-lock-settings
+                  (apply #'append (append font-lock-settings-by-lang
+                                           (list treesit-font-lock-settings)
+                                           (list (treesit-font-lock-rules
+                                                  :language 'shexc
+                                                  :feature 'comment
+                                                  :override t
+                                                  '((comment) @shexc-ts-mode-convert--fontify-fence-markers))))))
+      (setq-local treesit-simple-indent-rules
+                  (apply #'append treesit-simple-indent-rules indent-rules-by-lang))
+      (setq-local treesit-font-lock-feature-list
+                  (apply #'shexc-ts-mode-convert--merge-feature-lists
+                         treesit-font-lock-feature-list feature-lists))
+      (setq-local treesit-language-at-point-function
+                  #'shexc-ts-mode-convert--language-at-point)
+      (setq-local treesit-range-settings
+                  (treesit-range-rules #'shexc-ts-mode-convert--update-embedded-ranges))
+      ;; Create the embedded parsers now (rather than leaving it to
+      ;; `--update-embedded-ranges''s own `treesit-parser-create' call,
+      ;; the next thing `treesit-update-ranges' below triggers), so
+      ;; `shexc' can be reclaimed as newest *after* them.
+      (mapc #'treesit-parser-create shexc-ts-mode-convert--fence-embedded-ready-languages)
+      (shexc-ts-mode-convert--reclaim-primary-parser-order)
+      (treesit-update-ranges)
+      (treesit-font-lock-recompute-features)
+      (font-lock-flush))))
+
+;; ---------------------------------------------------------------------
+;; xref into/out of a SHEXR fence
+;;
+;; "Out of": `shexc-ts-mode--label-at-point' only ever consults the
+;; live ShExC parse tree (explicitly, as of the fix described in this
+;; section's earlier Commentary), so it always returns nil for a
+;; position inside a fence's *content* -- there's no `shape_expr_label'
+;; there, only `turtle' nodes.  `shexc-ts-mode-convert--identifier-at-
+;; point' (registered on `shexc-ts-mode-extra-identifier-at-point-
+;; functions') instead asks the embedded `turtle' parser for the
+;; smallest enclosing IRI/prefixed-name/blank-node-label node at point
+;; and returns *its* raw text -- e.g. hovering `<Item>' in `sx:id
+;; <Item>' returns the string `"<Item>"', exactly the same string a
+;; `@<Item>' shape-ref node elsewhere in the live ShExC tree would
+;; have produced, so the existing (unchanged) raw-text matching in
+;; `xref-backend-definitions'/`-references' picks it up with no
+;; further work.  Only JSON (no analogous embedded-parser path is
+;; wired up here yet) and only SHEXR fences (ShExJ has no `subject'-
+;; style hoisting marker to exploit the same way -- see "Into" below)
+;; are covered.
+;;
+;; "Into": a hoisted ShapeDecl/TripleExpr's own identity, by this
+;; file's serializer convention (see shexc-shexr.el's Commentary), is
+;; always the *subject* of its own top-level Turtle statement -- never
+;; nested inside a `[ ... ]'.  Tree-sitter-turtle gives every top-level
+;; statement's subject its own wrapper node type, conveniently named
+;; `subject' (confirmed empirically against a real fence's parse tree)
+;; -- so "every fenced ShapeDecl/TripleExpr declaration" is simply
+;; "every `subject' node in the embedded `turtle' parser's tree",
+;; independent of which specific fence each one belongs to (the
+;; parser's ranges already restrict it to fence content only).  A
+;; reference, symmetrically, is the object of an `sx:id' property --
+;; whether that property sits on an anonymous `sx:Ref' wrapper (a
+;; "real" forward reference) or directly on a hoisted node's own
+;; statement (that node's self-identifying `:id', registered for the
+;; same reason `shexc-shexr--node-keys' always emits it -- see that
+;; section's Commentary in shexc-shexr.el) isn't distinguished here;
+;; both are legitimate "occurrences of this identifier" for `find-
+;; references' to surface.
+;;
+;; SHEXJ fences get the same two directions, by the same reasoning
+;; applied to JSON instead of Turtle: a hoisted node's identity is the
+;; value of its own "id" key (see shexc-shexj.el's Commentary: every
+;; ShapeDecl, and any TripleExpr with an explicit ShExC `$<id>'
+;; annotation, always gets one -- the exact same two cases ShExR's
+;; `subject' marks), and a reference is any other IRI-shaped JSON
+;; string -- in an `extends'/`shapeExprs'/`values' array entry, or a
+;; `predicate'/`datatype'/`shapeExpr' pair value, etc. -- there's no
+;; analogue of ShExR's anonymous `sx:Ref' wrapper to special-case here,
+;; since ShExJ represents a bare forward reference as nothing more
+;; than the IRI string itself.
+;;
+;; The one wrinkle specific to JSON: ShExJ never abbreviates -- every
+;; IRI is always written out in full (`"http://a.example/Item"', never
+;; `<Item>' or `ex:Item') -- so raw JSON text never directly text-
+;; equals the live ShExC tree's (typically abbreviated) label text the
+;; way ShExR's Turtle output happens to (see above).  `--json-iri-
+;; token' bridges this by rendering a JSON value's absolute IRI back
+;; into ShExC surface syntax, shortened against the buffer's own
+;; PREFIX/BASE table exactly the way `shexc-ts-mode-convert-fence-to-
+;; shexc' already does when decompiling -- so a JSON "id"/reference
+;; value becomes directly, raw-text comparable against everything
+;; else once more.
+
+(defconst shexc-ts-mode-convert--iri-scheme-re "\\`[A-Za-z][A-Za-z0-9+.-]*:"
+  "Matches the start of an absolute IRI (has a scheme) -- used to tell a
+ShExJ string value that's plausibly an IRI (e.g. an `id'/`extends'/
+`predicate' value) apart from one that plainly isn't (e.g. a `type'
+discriminator like \"ShapeDecl\", or `nodeKind' value like \"iri\" --
+neither of which ever contains a `:').")
+
+(defun shexc-ts-mode-convert--json-string-text (node)
+  "Raw unquoted text of a tree-sitter-json `string' NODE.  No escape
+decoding -- adequate for the plain-ASCII IRIs this is used for; see
+`shexc-shexj--unescape' for the general case this deliberately skips."
+  (let ((text (treesit-node-text node t)))
+    (substring text 1 (1- (length text)))))
+
+(defun shexc-ts-mode-convert--json-iri-token (iri)
+  "Render absolute IRI string IRI the way a ShExC shape label would --
+shortened against the buffer's own PREFIX/BASE table when possible
+(see `shexc-ts-mode-convert--shorten-iri'), else a full `<IRI>' -- so
+it's directly raw-text comparable against the live ShExC tree's own
+label nodes and a ShExR fence's Turtle nodes, both of which already
+follow this convention."
+  (or (shexc-ts-mode-convert--shorten-iri (shexc-shexj-buffer-directive-ctx) iri)
+      (concat "<" iri ">")))
+
+(defun shexc-ts-mode-convert--identifier-at-point ()
+  "See this section's top Commentary.  Registered on
+`shexc-ts-mode-extra-identifier-at-point-functions'."
+  (pcase (treesit-language-at (point))
+    ('turtle
+     (when-let* ((node (treesit-node-at (point) 'turtle))
+                 (term (treesit-parent-until
+                        node
+                        (lambda (n) (member (treesit-node-type n)
+                                             '("iri_reference" "prefixed_name" "blank_node_label")))
+                        t)))
+       (treesit-node-text term t)))
+    ('json
+     (when-let* ((node (treesit-node-at (point) 'json))
+                 (str (treesit-parent-until
+                       node (lambda (n) (equal (treesit-node-type n) "string")) t))
+                 (text (shexc-ts-mode-convert--json-string-text str))
+                 ((string-match-p shexc-ts-mode-convert--iri-scheme-re text)))
+       (shexc-ts-mode-convert--json-iri-token text)))))
+
+(defun shexc-ts-mode-convert--fence-language-root (lang)
+  "The embedded LANG parser's root node, or nil if no fence of the kind
+that embeds LANG has activated it yet, or the grammar isn't installed
+-- see `shexc-ts-mode-convert--fence-embedded-ready-languages'."
+  (and (memq lang shexc-ts-mode-convert--fence-embedded-ready-languages)
+       (treesit-buffer-root-node lang)))
+
+(defun shexc-ts-mode-convert--fence-xref-definitions (identifier)
+  "Xref-items for every fenced ShapeDecl/TripleExpr declaration across
+all SHEXR/SHEXJ fences whose identity equals IDENTIFIER: a Turtle
+`subject' node (SHEXR) or an `id' pair's value (SHEXJ) -- see this
+section's top Commentary.  Registered on
+`shexc-ts-mode-extra-xref-definitions-functions'."
+  (append
+   (when-let* ((root (shexc-ts-mode-convert--fence-language-root 'turtle)))
+     (mapcar #'rdf-core-xref-make
+             (seq-filter (lambda (n) (equal (treesit-node-text n t) identifier))
+                         (treesit-query-capture root '((subject) @s) nil nil t))))
+   (when-let* ((root (shexc-ts-mode-convert--fence-language-root 'json)))
+     (mapcar (lambda (p) (rdf-core-xref-make (treesit-node-child-by-field-name p "value")))
+             (seq-filter
+              (lambda (p)
+                (and (equal (shexc-ts-mode-convert--json-string-text
+                             (treesit-node-child-by-field-name p "key"))
+                            "id")
+                     (equal (shexc-ts-mode-convert--json-iri-token
+                             (shexc-ts-mode-convert--json-string-text
+                              (treesit-node-child-by-field-name p "value")))
+                            identifier)))
+              (treesit-query-capture root '((pair) @p) nil nil t))))))
+
+(defun shexc-ts-mode-convert--fence-xref-references (identifier)
+  "Xref-items for every fenced reference to IDENTIFIER across all SHEXR/
+SHEXJ fences: a Turtle `sx:id' property's object (SHEXR) or any IRI-
+shaped JSON string (SHEXJ) -- see this section's top Commentary.
+Registered on `shexc-ts-mode-extra-xref-references-functions'."
+  (append
+   (when-let* ((root (shexc-ts-mode-convert--fence-language-root 'turtle)))
+     (let (items pred-text)
+       (dolist (cap (treesit-query-capture
+                     root '((property (predicate) @pred (object_list (_) @obj))) nil nil))
+         (pcase (car cap)
+           ('pred (setq pred-text (treesit-node-text (cdr cap) t)))
+           ('obj (when (and (equal pred-text "sx:id") (equal (treesit-node-text (cdr cap) t) identifier))
+                   (push (rdf-core-xref-make (cdr cap)) items)))))
+       (nreverse items)))
+   (when-let* ((root (shexc-ts-mode-convert--fence-language-root 'json)))
+     (mapcan
+      (lambda (n)
+        (let ((text (shexc-ts-mode-convert--json-string-text n)))
+          (when (and (string-match-p shexc-ts-mode-convert--iri-scheme-re text)
+                     (equal (shexc-ts-mode-convert--json-iri-token text) identifier))
+            (list (rdf-core-xref-make n)))))
+      (treesit-query-capture root '((string) @s) nil nil t)))))
+
 (defun shexc-ts-mode-convert--setup ()
   (add-hook 'flymake-diagnostic-functions #'shexc-ts-mode-convert--flymake-backend nil t)
   (add-hook 'shexc-ts-mode-extra-declared-shape-labels-functions
-            #'shexc-ts-mode-convert--fenced-decl-labels nil t))
+            #'shexc-ts-mode-convert--fenced-decl-labels nil t)
+  (add-hook 'shexc-ts-mode-extra-identifier-at-point-functions
+            #'shexc-ts-mode-convert--identifier-at-point nil t)
+  (add-hook 'shexc-ts-mode-extra-xref-definitions-functions
+            #'shexc-ts-mode-convert--fence-xref-definitions nil t)
+  (add-hook 'shexc-ts-mode-extra-xref-references-functions
+            #'shexc-ts-mode-convert--fence-xref-references nil t)
+  (shexc-ts-mode-convert--setup-fence-embedding))
 
 ;;;###autoload
 (add-hook 'shexc-ts-mode-hook #'shexc-ts-mode-convert--setup)

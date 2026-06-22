@@ -478,7 +478,7 @@ separators and operators.")
   "Return the smallest `shape_expr_label' node enclosing POS, if any.
 This matches both shape declarations (`<#S> { ... }') and shape
 references (`@<#S>', `EXTENDS @<#S>', `&<#S>', `start = @<#S>')."
-  (let ((node (treesit-node-at pos)))
+  (let ((node (treesit-node-at pos 'shexc)))
     (treesit-parent-until
      node
      (lambda (n) (string= (treesit-node-type n) "shape_expr_label"))
@@ -491,7 +491,7 @@ references (`@<#S>', `EXTENDS @<#S>', `&<#S>', `start = @<#S>')."
 
 (defun shexc-ts-mode--query-labels (pattern)
   "Return all `shape_expr_label' nodes captured as @label by PATTERN."
-  (treesit-query-capture (treesit-buffer-root-node) pattern nil nil t))
+  (treesit-query-capture (treesit-buffer-root-node 'shexc) pattern nil nil t))
 
 (defun shexc-ts-mode--all-labels ()
   "Return all shape-label nodes in the buffer (declarations and references)."
@@ -505,9 +505,35 @@ references (`@<#S>', `EXTENDS @<#S>', `&<#S>', `start = @<#S>')."
   "Return the xref backend symbol for `shexc-ts-mode'."
   'shexc-ts-mode)
 
+(defvar-local shexc-ts-mode-extra-identifier-at-point-functions nil
+  "Abnormal hook (tried via `run-hook-with-args-until-success', no args):
+each function returns an identifier string for xref to use at point,
+or nil to defer to the next function and finally to the live ShExC
+parse tree's own `shape_expr_label' lookup.
+
+For point inside a converted ShExJ/ShExR fence (see
+shexc-ts-mode-convert.el): such a fence is a `/* ... */' block
+comment, structurally opaque to the live ShExC parse tree (see
+`shexc-ts-mode-extra-declared-shape-labels-functions'), so the default
+lookup always returns nil there -- this hook lets an external feature
+that knows how to look inside its own fence format supply an
+identifier anyway.")
+
+(defvar-local shexc-ts-mode-extra-xref-definitions-functions nil
+  "Abnormal hook: each function (IDENTIFIER) returns a list of additional
+`xref-item's defining IDENTIFIER, alongside the live ShExC parse
+tree's own `shape_expr_decl' matches -- see
+`shexc-ts-mode-extra-identifier-at-point-functions' for why a fenced
+declaration needs this too.")
+
+(defvar-local shexc-ts-mode-extra-xref-references-functions nil
+  "Like `shexc-ts-mode-extra-xref-definitions-functions', for `shape_ref'-
+style references found inside a fence.")
+
 (cl-defmethod xref-backend-identifier-at-point ((_backend (eql shexc-ts-mode)))
   "Return the shape label at point, for xref."
-  (shexc-ts-mode--label-at-point))
+  (or (run-hook-with-args-until-success 'shexc-ts-mode-extra-identifier-at-point-functions)
+      (shexc-ts-mode--label-at-point)))
 
 (cl-defmethod xref-backend-identifier-completion-table ((_backend (eql shexc-ts-mode)))
   "Return all shape labels in the buffer, for xref completion."
@@ -516,17 +542,21 @@ references (`@<#S>', `EXTENDS @<#S>', `&<#S>', `start = @<#S>')."
 
 (cl-defmethod xref-backend-definitions ((_backend (eql shexc-ts-mode)) identifier)
   "Return the `shape_expr_decl' xref defining IDENTIFIER."
-  (rdf-core-matching-xrefs
-   (shexc-ts-mode--query-labels
-    '((shape_expr_decl label: (shape_expr_label) @label)))
-   identifier))
+  (append
+   (rdf-core-matching-xrefs
+    (shexc-ts-mode--query-labels
+     '((shape_expr_decl label: (shape_expr_label) @label)))
+    identifier)
+   (mapcan (lambda (f) (funcall f identifier)) shexc-ts-mode-extra-xref-definitions-functions)))
 
 (cl-defmethod xref-backend-references ((_backend (eql shexc-ts-mode)) identifier)
   "Return the `shape_ref' xrefs referencing IDENTIFIER."
-  (rdf-core-matching-xrefs
-   (shexc-ts-mode--query-labels
-    '((shape_ref label: (shape_expr_label) @label)))
-   identifier))
+  (append
+   (rdf-core-matching-xrefs
+    (shexc-ts-mode--query-labels
+     '((shape_ref label: (shape_expr_label) @label)))
+    identifier)
+   (mapcan (lambda (f) (funcall f identifier)) shexc-ts-mode-extra-xref-references-functions)))
 
 ;;; Navigation: structural defun-nav, smart sexp, breadcrumb
 ;;
@@ -575,7 +605,7 @@ outside of any `shape_expr_decl'.
 
 Used as `add-log-current-defun-function', which powers
 `which-function-mode' and `add-log-current-defun'."
-  (let ((node (treesit-node-at (point)))
+  (let ((node (treesit-node-at (point) 'shexc))
         (label nil)
         (predicates nil))
     (while node
@@ -968,7 +998,7 @@ past the end of the buffer's last node -- e.g. in trailing whitespace,
 or in a blank line between two declarations -- so the candidate decl's
 span must still be checked against POS."
   (when-let* ((decl (treesit-parent-until
-                      (treesit-node-at pos)
+                      (treesit-node-at pos 'shexc)
                       (lambda (n) (string= (treesit-node-type n) "shape_expr_decl"))
                       t)))
     (and (<= (treesit-node-start decl) pos (treesit-node-end decl))
@@ -1079,7 +1109,7 @@ REACHABLE."
 (defun shexc-ts-mode--decl-predicate-nodes (decl)
   "Return all `predicate' nodes that are descendants of DECL."
   (treesit-query-capture
-   (treesit-buffer-root-node)
+   (treesit-buffer-root-node 'shexc)
    '((triple_constraint predicate: (predicate) @pred))
    (treesit-node-start decl) (treesit-node-end decl)
    t))
@@ -1568,9 +1598,9 @@ ancestor nodes at once, so which node `treesit-node-at' returns
 right after `}' depends on which side of that shared boundary it
 resolves to."
   (catch 'found
-    (dolist (start (delete-dups (delq nil (list (treesit-node-at pos)
+    (dolist (start (delete-dups (delq nil (list (treesit-node-at pos 'shexc)
                                                  (and (> pos (point-min))
-                                                      (treesit-node-at (1- pos)))))))
+                                                      (treesit-node-at (1- pos) 'shexc))))))
       (let ((node start))
         (while node
           (when (string= (treesit-node-type node) "triple_constraint")
@@ -1651,7 +1681,7 @@ expression element at point."
   (pcase-let* ((`(,beg . ,end) (if (use-region-p)
                                    (cons (region-beginning) (region-end))
                                  (cons (point) (1+ (point)))))
-               (probe (or (treesit-node-on beg end) (treesit-node-at beg)))
+               (probe (or (treesit-node-on beg end 'shexc) (treesit-node-at beg 'shexc)))
                (group (treesit-parent-until
                        probe
                        (lambda (n) (string= (treesit-node-type n) "group_triple_expr"))
@@ -1718,7 +1748,7 @@ enclosing `shape_expr_decl' -- e.g. on a `<#Shape> EXTENDS
 @<#Other>' header line, before its `{ ... }' body -- fall back to
 that declaration's first `{ ... }'."
   (if-let* ((def (rdf-core-ancestor-of-type
-                   (treesit-node-at pos)
+                   (treesit-node-at pos 'shexc)
                    '("shape_definition" "inline_shape_definition")
                    t)))
       (shexc-ts-mode--def-open-brace def)
@@ -1813,7 +1843,7 @@ if PREFIX is empty or no active map has an entry for it."
 (defun shexc-ts-mode--prefixed-name-at (pos)
   "Return the `prefixed_name' node at POS, or nil if none."
   (treesit-parent-until
-   (treesit-node-at pos)
+   (treesit-node-at pos 'shexc)
    (lambda (n) (string= (treesit-node-type n) "prefixed_name"))
    t))
 
@@ -1822,7 +1852,7 @@ if PREFIX is empty or no active map has an entry for it."
 declares via `PREFIX ex: <...>'."
   (mapcar (lambda (n) (shexc-ts-mode--prefix-name (treesit-node-text n t)))
           (treesit-query-capture
-           (treesit-buffer-root-node)
+           (treesit-buffer-root-node 'shexc)
            '((prefix_decl name: (pname_ns) @name)) nil nil t)))
 
 (defun shexc-ts-mode--insert-prefix-decl (prefix iri)
@@ -1831,7 +1861,7 @@ It is placed immediately after the buffer's last
 `base_decl'/`prefix_decl'/`import_decl', or at `point-min' if the
 buffer has none of those."
   (let ((directives (treesit-query-capture
-                      (treesit-buffer-root-node)
+                      (treesit-buffer-root-node 'shexc)
                       '([(base_decl) (prefix_decl) (import_decl)] @d)
                       nil nil t)))
     (if directives
@@ -1930,7 +1960,7 @@ adds `PREFIX %s: <%s>' from the %s map"
                                 prefix prefix (car found) (cdr found))
                       (format "Undefined prefix %s:" prefix)))))))
            (treesit-query-capture
-            (treesit-buffer-root-node) '((prefixed_name) @n) nil nil t)))))
+            (treesit-buffer-root-node 'shexc) '((prefixed_name) @n) nil nil t)))))
 
 (defun shexc-ts-mode--flymake-syntax-errors ()
   "Return `:error' diagnostics for tree-sitter ERROR nodes.
@@ -1939,7 +1969,7 @@ I.e. text the parser could not make sense of, e.g. the `p3' in
 followed by an unexpected token\)."
   (let (seen diagnostics)
     (dolist (n (treesit-query-capture
-                 (treesit-buffer-root-node) '((ERROR) @e) nil nil t))
+                 (treesit-buffer-root-node 'shexc) '((ERROR) @e) nil nil t))
       (let ((range (cons (treesit-node-start n) (treesit-node-end n))))
         (unless (member range seen)
           (push range seen)
@@ -2010,7 +2040,7 @@ sign of a typo or a missing `|'/cardinality, so they are flagged here
 as `:note's for orientation, one per duplicated `triple_constraint'."
   (let (diagnostics)
     (dolist (group (treesit-query-capture
-                     (treesit-buffer-root-node)
+                     (treesit-buffer-root-node 'shexc)
                      '((group_triple_expr) @g) nil nil t))
       (let ((by-predicate (make-hash-table :test #'equal)))
         (dolist (element (treesit-node-children group))

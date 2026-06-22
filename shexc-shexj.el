@@ -857,7 +857,15 @@ NUL byte in the buffer, which breaks tree-sitter-shexc's C lexer."
 
 (defun shexc-shexj-compile-buffer ()
   "Compile the current buffer's ShExC parse tree to a ShExJ value-tree."
-  (let ((root (treesit-buffer-root-node)))
+  ;; Explicit `\='shexc: this file has no dependency on
+  ;; `shexc-ts-mode-convert.el', but a caller that loaded it may have
+  ;; created additional (embedded-fence-content) parsers in this same
+  ;; buffer -- `treesit-buffer-root-node' with no language defaults to
+  ;; whichever parser is *first* in `treesit-parser-list', which is
+  ;; only reliably `shexc' because that other file's setup code takes
+  ;; care to keep it so.  Pinning the language explicitly here means
+  ;; this function's own correctness never depends on that.
+  (let ((root (treesit-buffer-root-node 'shexc)))
     (shexc-shexj--check-no-errors root)
     (shexc-shexj--compile-schema-from-root root (shexc-shexj--make-ctx))))
 
@@ -867,7 +875,7 @@ NUL byte in the buffer, which breaks tree-sitter-shexc's C lexer."
 value-tree, having first scanned the whole buffer for the prefix/base
 context active at NODE's position."
   (let ((ctx (shexc-shexj--make-ctx))
-        (root (treesit-buffer-root-node)))
+        (root (treesit-buffer-root-node 'shexc)))
     (shexc-shexj--check-no-errors root)
     (shexc-shexj--compile-schema-from-root root ctx node)
     (list :context shexc-shexj--context-iri :type "Schema"
@@ -938,7 +946,7 @@ IRI the same way the compiler would (e.g. to compare two shape
 references for semantic, not just lexical, equality) without
 compiling the whole buffer."
   (let ((ctx (shexc-shexj--make-ctx)))
-    (dolist (c (treesit-node-children (treesit-buffer-root-node) t))
+    (dolist (c (treesit-node-children (treesit-buffer-root-node 'shexc) t))
       (pcase (treesit-node-type c)
         ("base_decl" (shexc-shexj--apply-base ctx c))
         ("prefix_decl" (shexc-shexj--apply-prefix ctx c))))

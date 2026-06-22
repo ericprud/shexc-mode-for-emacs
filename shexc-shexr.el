@@ -494,7 +494,18 @@ entry, `ref' for a wrapped `sx:Ref' id-reference, anything else
    ((shexc-shexr--literal-value-p v) (shexc-shexr--lit (shexc-shexr--serialize-literal v)))
    ((and (consp v) (keywordp (car v)))
     (if (plist-get v :id)
-        (shexc-shexr--mark-ref (plist-get v :id))
+        ;; V is itself hoisted to its own top-level statement (see
+        ;; `shexc-shexr--all-hoisted'), so this is just a bare reference
+        ;; to it, not V's own identity -- deliberately *not* marked
+        ;; (`shexc-shexr--lit', not `--mark-ref'): V's `:id' string is
+        ;; the very same `eq' value rendered again, unmarked-vs-marked,
+        ;; every place V is referenced from, so marking here too would
+        ;; make whichever reference happens to render first (almost
+        ;; always *not* V's own hoisted statement, which always renders
+        ;; last -- see `shexc-shexr-serialize') win over V's own `:id'
+        ;; property, which is where a target identified by that exact
+        ;; string should actually land.
+        (shexc-shexr--lit (shexc-shexr--ref-text (plist-get v :id)))
       (shexc-shexr--mark v (shexc-shexr--cat (shexc-shexr--lit "[ ") (shexc-shexr--flat-body v) (shexc-shexr--lit " ]")) (length " ]"))))
    ((listp v)
     (shexc-shexr--mark
@@ -570,7 +581,9 @@ would get."
    ((shexc-shexr--literal-value-p v) (shexc-shexr--lit (shexc-shexr--serialize-literal v)))
    ((and (consp v) (keywordp (car v)))
     (if (plist-get v :id)
-        (shexc-shexr--mark-ref (plist-get v :id))
+        ;; See the identical branch in `shexc-shexr--flat-value' for why
+        ;; this is deliberately unmarked.
+        (shexc-shexr--lit (shexc-shexr--ref-text (plist-get v :id)))
       (let* ((flat-pair (shexc-shexr--flat-body v))
              (flat (concat "[ " (car flat-pair) " ]")))
         (if (shexc-shexr--fits-p col width flat)
