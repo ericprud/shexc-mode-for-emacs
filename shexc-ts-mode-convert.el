@@ -54,6 +54,7 @@
 
 (require 'shexc-ts-mode)
 (require 'shexc-shexj)
+(require 'shexc-shexpath)
 (require 'shexc-shexr)
 (require 'treesit)
 (require 'flymake)
@@ -119,6 +120,20 @@ fence-to-fence hop can keep point on \"the same thing\" too, even
 though that hop re-parses the fence's *text* into a value-tree that's
 structurally identical to, but never `eq' to, the one that was
 originally serialized into it.")
+
+(defvar-local shexc-ts-mode-convert--id-locations nil
+  "An alist (ID-STRING . SHEXPATH-STRING) -- see
+`shexc-shexpath-id-locations' -- rebuilt fresh by
+`shexc-ts-mode-convert--target' every time a shape/schema is converted
+*to* ShExJ/ShExR, from the value-tree compiled at that moment (the only
+point at which a hoisted TripleExpr's \"real\" definition site is
+unambiguous by construction).  Consulted by
+`shexc-ts-mode-convert--parse-fence-content' when converting a ShExR
+fence back, to resolve the analogous ambiguity that a hand-edited fence
+otherwise has no in-graph way to settle -- see shexc-shexr.el's
+Commentary and `shexc-shexr--ambiguous-id-winners'.  In-memory,
+session-only, like `shexc-ts-mode-convert--fence-targets' -- never
+written into the fence text itself.")
 
 (defun shexc-ts-mode-convert--value-path-1 (root target acc)
   (when (eq root target) (throw 'shexc-ts-mode-convert--value-path-found (reverse acc)))
@@ -305,9 +320,11 @@ thing\" across conversion; see `shexc-ts-mode-convert--locate-target'."
     (if decl
         (let* ((tree (shexc-shexj-compile-node decl))
                (located (shexc-ts-mode-convert--locate-target decl orig-point)))
+          (setq shexc-ts-mode-convert--id-locations (shexc-shexpath-id-locations tree))
           (list (treesit-node-start decl) (treesit-node-end decl) tree (car located) (cdr located)))
       (let* ((tree (shexc-shexj-compile-buffer))
              (located (shexc-ts-mode-convert--locate-target (treesit-buffer-root-node 'shexc) orig-point)))
+        (setq shexc-ts-mode-convert--id-locations (shexc-shexpath-id-locations tree))
         (list (shexc-ts-mode-convert--directives-end) (point-max) tree (car located) (cdr located))))))
 
 (defun shexc-ts-mode-convert--indent-fence-opening-line (beg)
@@ -411,11 +428,18 @@ what \"the shape/schema at point\" means."
   "Parse CONTENT (already stripped of `# ' prefixes) per KIND
 \(\"SHEXJ\"/\"SHEXR\"\), signaling a `user-error' -- not a raw parser
 error -- on failure, so the calling command's `delete-region' never
-runs and the buffer is left untouched."
+runs and the buffer is left untouched.  For \"SHEXR\", consults
+`shexc-ts-mode-convert--id-locations' (see
+`shexc-shexr--id-location-table') to resolve which occurrence of a
+multiply-referenced TripleExpr is the definition -- the buffer's own
+table, from the last time this region was converted *to* ShExR, is the
+best available hint for a hand-edited fence; absent a usable entry, the
+textually-first occurrence wins (see `shexc-shexr--ambiguous-id-winners')."
   (condition-case err
       (pcase kind
         ("SHEXJ" (shexc-shexj-from-json content))
-        ("SHEXR" (shexc-shexr-parse content)))
+        ("SHEXR" (let ((shexc-shexr--id-location-table shexc-ts-mode-convert--id-locations))
+                   (shexc-shexr-parse content))))
     (error (user-error "shexc-ts-mode: cannot parse fenced %s: %s" kind (error-message-string err)))))
 
 (defun shexc-ts-mode-convert--fence-tree (fence)
