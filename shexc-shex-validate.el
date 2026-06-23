@@ -49,6 +49,7 @@
 (require 'rdf-model)
 (require 'rdf-store)
 (require 'rdf-turtle)
+(require 'tabulated-list)
 
 ;; Provided by the `rudof_emacs' dynamic module once loaded -- declared
 ;; so the byte-compiler doesn't warn about calls to them further down.
@@ -161,6 +162,20 @@ buffer is unset/no longer live."
       (setq shexc-shex-validate--shapemap-tick shapemap-tick))
     (rudof-emacs-validate-shex shexc-shex-validate--rudof)))
 
+(defun shexc-shex-validate--check-with-positions (data-buffer)
+  "Run `shexc-shex-validate--check' in DATA-BUFFER and return
+\(QUADRUPLES . POSITIONS) -- POSITIONS is DATA-BUFFER's current
+subject-position table (see `rdf-turtle-parse-buffer'), for mapping a
+quadruple's node back to a position in DATA-BUFFER. Shared by
+`shexc-shex-validate-flymake' and
+`shexc-shex-validate-show-result-shapemap', the two front ends for the
+same underlying check."
+  (with-current-buffer data-buffer
+    (let ((quadruples (shexc-shex-validate--check))
+          (positions (make-hash-table :test #'equal)))
+      (rdf-turtle-parse-buffer (rdf-store-create) positions)
+      (cons quadruples positions))))
+
 ;;; Diagnostics
 
 (defun shexc-shex-validate--diagnostics (quadruples positions)
@@ -199,9 +214,9 @@ backend-disabling behavior, so a transient mistake while mid-edit in
 the schema buffer doesn't require manually re-enabling this backend
 once it's fixed."
   (condition-case err
-      (let ((quadruples (shexc-shex-validate--check))
-            (positions (make-hash-table :test #'equal)))
-        (rdf-turtle-parse-buffer (rdf-store-create) positions)
+      (let* ((checked (shexc-shex-validate--check-with-positions (current-buffer)))
+             (quadruples (car checked))
+             (positions (cdr checked)))
         (funcall report-fn (shexc-shex-validate--diagnostics quadruples positions)))
     (error
      (funcall report-fn
@@ -223,6 +238,96 @@ own."
   (setq shexc-shex-validate-shapemap-buffer (get-buffer shapemap-buffer))
   (add-hook 'flymake-diagnostic-functions #'shexc-shex-validate-flymake nil t)
   (flymake-mode 1))
+
+;;; Result ShapeMap buffer
+;;
+;; Unlike `shexc-shex-validate-flymake' (which only ever surfaces
+;; failures, in-place), this shows every node/shape association in
+;; the ShapeMap -- "conformant" rows included -- in its own
+;; `tabulated-list-mode' buffer, one row per association, sortable by
+;; any column. `RET' jumps to that row's node in the data buffer; `g'
+;; (`revert-buffer', bound by `tabulated-list-mode' already)
+;; re-validates and redraws every row in place, exactly like
+;; `list-processes'/`package-menu-mode'.
+
+(defvar-local shexc-shex-validate-results--data-buffer nil
+  "The data buffer this `*ShEx Result ShapeMap*' buffer reports on.")
+
+(defvar-local shexc-shex-validate-results--positions nil
+  "`shexc-shex-validate-results--data-buffer''s subject-position table
+\(see `rdf-turtle-parse-buffer'), as of this results buffer's last
+\(re)validation -- consulted by `shexc-shex-validate-results-goto-node'.")
+
+(defun shexc-shex-validate-results--status-face (status)
+  (pcase status
+    ("conformant" 'success)
+    ("pending" 'shadow)
+    (_ 'error))) ; "nonconformant"/"inconsistent"
+
+(defun shexc-shex-validate-results--entries (data-buffer)
+  "`tabulated-list-entries' for DATA-BUFFER: validate it and return one
+entry per `rudof-emacs-validate-shex' quadruple, ID'd by `(NODE
+. SHAPE)' (a ShapeMap's node/shape associations are themselves a set,
+so this is already unique). Refreshes
+`shexc-shex-validate-results--positions' as a side effect, since this
+function is called by `tabulated-list-print' (hence: on every `g')."
+  (let ((checked (shexc-shex-validate--check-with-positions data-buffer)))
+    (setq shexc-shex-validate-results--positions (cdr checked))
+    (mapcar
+     (lambda (quad)
+       (pcase-let ((`(,node ,shape ,status ,reason) quad))
+         (list (cons node shape)
+               (vector node shape
+                       (propertize status 'face (shexc-shex-validate-results--status-face status))
+                       reason))))
+     (car checked))))
+
+(defun shexc-shex-validate-results-goto-node ()
+  "Jump to the row at point's node in its data buffer, at the position
+recorded as of this results buffer's last (re)validation -- see
+`shexc-shex-validate-results--positions'. If the node occurs more than
+once as a subject there, jumps to the first (topmost) occurrence."
+  (interactive)
+  (let* ((id (tabulated-list-get-id))
+         (node (car id))
+         (buffer shexc-shex-validate-results--data-buffer))
+    (unless (and buffer (buffer-live-p buffer))
+      (user-error "Data buffer for this results buffer is no longer live"))
+    (let ((spans (gethash node shexc-shex-validate-results--positions)))
+      (unless spans
+        (user-error "Node %s does not occur as a subject in %s" node buffer))
+      (pop-to-buffer buffer)
+      (goto-char (caar (last spans))))))
+
+(defvar-keymap shexc-shex-validate-results-mode-map
+  :parent tabulated-list-mode-map
+  "RET" #'shexc-shex-validate-results-goto-node
+  "<mouse-2>" #'shexc-shex-validate-results-goto-node)
+
+(define-derived-mode shexc-shex-validate-results-mode tabulated-list-mode "ShEx-Results"
+  "Major mode for a ShEx validation result ShapeMap: one row per
+node/shape association, `RET' jumps to that node in the data buffer."
+  (setq tabulated-list-format
+        [("Node" 40 t) ("Shape" 30 t) ("Status" 14 t) ("Reason" 0 t)])
+  (setq tabulated-list-padding 2)
+  (tabulated-list-init-header))
+
+;;;###autoload
+(defun shexc-shex-validate-show-result-shapemap (&optional data-buffer)
+  "Show a `*ShEx Result ShapeMap: NAME*' buffer for DATA-BUFFER
+\(default: the current buffer) in a bottom side window."
+  (interactive)
+  (let* ((data-buffer (or data-buffer (current-buffer)))
+         (results-buffer (get-buffer-create (format "*ShEx Result ShapeMap: %s*" (buffer-name data-buffer)))))
+    (with-current-buffer results-buffer
+      (shexc-shex-validate-results-mode)
+      (setq shexc-shex-validate-results--data-buffer data-buffer)
+      (setq tabulated-list-entries
+            (lambda () (shexc-shex-validate-results--entries data-buffer)))
+      (tabulated-list-print))
+    (display-buffer
+     results-buffer
+     '((display-buffer-in-side-window) (side . bottom) (window-height . 0.25)))))
 
 (provide 'shexc-shex-validate)
 
