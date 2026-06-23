@@ -235,6 +235,44 @@ characters."
       (should (rdf-model-blank-node-p inner-head))
       (should-not (equal outer-head inner-head)))))
 
+;;; Subject positions
+
+(ert-deftest rdf-turtle-test-subject-positions-named-node ()
+  (with-temp-buffer
+    (insert "@prefix ex: <http://example.org/> .\nex:s ex:p ex:o .\nex:s ex:q ex:o2 .\n")
+    (let ((positions (make-hash-table :test #'equal)))
+      (rdf-turtle-parse-buffer nil positions)
+      (let ((spans (gethash "http://example.org/s" positions)))
+        (should (= 2 (length spans)))
+        (dolist (span spans)
+          (should (equal (buffer-substring (car span) (cdr span)) "ex:s")))))))
+
+(ert-deftest rdf-turtle-test-subject-positions-blank-node-label ()
+  (with-temp-buffer
+    (insert "@prefix ex: <http://example.org/> .\n_:b1 ex:p ex:o .\n")
+    (let ((positions (make-hash-table :test #'equal)))
+      (rdf-turtle-parse-buffer nil positions)
+      (let ((spans (gethash "_:b1" positions)))
+        (should (= 1 (length spans)))
+        (should (equal (buffer-substring (caar spans) (cdar spans)) "_:b1"))))))
+
+(ert-deftest rdf-turtle-test-subject-positions-bnpl-only-subject-untracked ()
+  ;; `[ ... ] .' as a top-level subject has no external label, so it must
+  ;; not show up under any key -- there would be nothing to look it up by.
+  (with-temp-buffer
+    (insert "@prefix ex: <http://example.org/> .\n[ ex:p ex:o ] .\n")
+    (let ((positions (make-hash-table :test #'equal)))
+      (rdf-turtle-parse-buffer nil positions)
+      (should (= 0 (hash-table-count positions))))))
+
+(ert-deftest rdf-turtle-test-subject-positions-nil-by-default ()
+  ;; `rdf-turtle-parse-buffer' must not require/allocate a POSITIONS table
+  ;; when the caller doesn't pass one -- existing callers see no behavior
+  ;; change.
+  (with-temp-buffer
+    (insert "<http://a/s> <http://a/p> <http://a/o> .")
+    (should (rdf-turtle-parse-buffer))))
+
 ;;; shexTest corpus
 
 (defconst rdf-turtle-test--known-unsupported '("meta.ttl")

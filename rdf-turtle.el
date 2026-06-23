@@ -61,7 +61,10 @@
 (cl-defstruct (rdf-turtle--ctx (:constructor rdf-turtle--ctx-create))
   (prefixes (make-hash-table :test #'equal))
   (base nil)
-  (store nil))
+  (store nil)
+  ;; Hash table (`equal' test), filled in by `rdf-turtle--process-triples'
+  ;; when non-nil -- see `rdf-turtle-parse-buffer''s POSITIONS argument.
+  (positions nil))
 
 ;;; String/IRI/local-name unescaping
 ;;
@@ -254,6 +257,23 @@ lists mint fresh blank nodes and emit quads about them)."
       (rdf-turtle--process-property-list ctx bnode property-list))
     bnode))
 
+;;; External term keys
+;;
+;; A subject's string key, in the same format rudof/`shex_ast' itself
+;; prints a `Node' as (bare IRI; blank node prefixed with "_:") -- so a
+;; caller matching ShEx validation-result node strings (rudof's own
+;; `Node::to_string()'/`Object''s `Display') back to this table's keys
+;; needs no extra translation in either direction. Only ever called on
+;; subject-position terms (named/blank node), never literals.
+
+(defun rdf-turtle-term-key (term)
+  "External string key for TERM (an `rdf-model-named-node' or
+`rdf-model-blank-node'), matching rudof's own `Node' string form."
+  (cond
+   ((rdf-model-named-node-p term) (rdf-model-named-node-value term))
+   ((rdf-model-blank-node-p term) (concat "_:" (rdf-model-blank-node-value term)))
+   (t (signal 'wrong-type-argument (list 'rdf-model-named-node-or-blank-node-p term)))))
+
 ;;; Statement processing
 
 (defun rdf-turtle--predicate-term (ctx node)
@@ -291,7 +311,16 @@ lists mint fresh blank nodes and emit quads about them)."
     ;; `[...]' (its own internal properties were already processed
     ;; inside rdf-turtle--blank-node-property-list-term).
     (when property-list-node
-      (rdf-turtle--process-property-list ctx subject property-list-node))))
+      (rdf-turtle--process-property-list ctx subject property-list-node))
+    ;; A bnpl-only subject (`[ ... ] .') has no external label a ShEx
+    ;; ShapeMap/validation result could ever name, so there is nothing
+    ;; useful to record a position for -- only subject-node occurrences
+    ;; (named or `_:label'-led) go in the table.
+    (when (and subject-node (rdf-turtle--ctx-positions ctx))
+      (let ((key (rdf-turtle-term-key subject))
+            (span (cons (treesit-node-start subject-node) (treesit-node-end subject-node))))
+        (puthash key (cons span (gethash key (rdf-turtle--ctx-positions ctx)))
+                 (rdf-turtle--ctx-positions ctx))))))
 
 (defun rdf-turtle--process-directive (ctx node)
   (let ((kind (treesit-node-type (treesit-node-child node 0 t))))
@@ -321,10 +350,19 @@ lists mint fresh blank nodes and emit quads about them)."
 
 ;;; Public API
 
-(defun rdf-turtle-parse-buffer (&optional store)
+(defun rdf-turtle-parse-buffer (&optional store positions)
   "Parse the current buffer's Turtle content into STORE (a new `rdf-store'
-if nil) and return it."
-  (let ((ctx (rdf-turtle--ctx-create :store (or store (rdf-store-create)))))
+if nil) and return it.
+
+POSITIONS, if non-nil, is a hash table (`equal' test) that this function
+fills with subject `rdf-turtle-term-key' -> list of `(START . END)' buffer
+positions, one entry per triples-statement subject occurrence in the
+buffer (so a caller validating *this* buffer can map a ShEx validation
+result's node string back to where it's actually asserted) -- meaningless
+for any buffer other than the one actually being parsed, so unlike STORE
+this is never useful from `rdf-turtle-parse-string'/`-file', which parse
+inside a throwaway `with-temp-buffer'."
+  (let ((ctx (rdf-turtle--ctx-create :store (or store (rdf-store-create)) :positions positions)))
     (treesit-parser-create 'turtle)
     (rdf-turtle--walk-document ctx (treesit-buffer-root-node))
     (rdf-turtle--ctx-store ctx)))
