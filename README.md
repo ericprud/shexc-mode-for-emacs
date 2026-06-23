@@ -847,6 +847,120 @@ schema language for RDF graphs, playing roughly the role JSON Schema plays
 for JSON. It's built on the same tree-sitter infrastructure
 (`rdf-core`) as this mode. See [shexc-ts-mode](#shexc-ts-mode) above.
 
+## ShEx conformance checking (`shexc-shex-validate`)
+
+`shexc-shex-validate.el` checks whether RDF data conforms to a ShEx
+schema, right in the buffer — flagging non-conformant nodes with
+`flymake` and, separately, listing every node/shape result (including
+passing ones) in its own buffer. It bridges `shexc-ts-mode` (the
+schema) and `turtle-ts-mode` (the data), and does the actual
+validation via [rudof](https://github.com/rudof-project/rudof)'s
+`rudof_emacs` dynamic module — a held, mutable handle into rudof's own
+Rust validator, not a subprocess call per check.
+
+**Status: experimental, and `rudof_emacs` isn't released yet.** You'll
+need to build it yourself:
+
+```shell
+git clone https://github.com/rudof-project/rudof
+cd rudof
+cargo build --release -p rudof_emacs
+```
+
+This produces `target/release/librudof_emacs.{dylib,so,dll}` (the
+extension depends on your platform). Then, alongside loading
+`shexc-shex-validate.el` itself:
+
+```lisp
+(add-to-list 'load-path "{folder that contains shexc-shex-validate.el}")
+(require 'shexc-shex-validate)
+
+(setq shexc-shex-validate-rudof-module-path
+      "/path/to/rudof/target/release/librudof_emacs.dylib")
+```
+
+### Trying it out
+
+Three buffers: a ShExC schema, some Turtle data, and a (compact-syntax)
+ShapeMap saying which node(s) to check against which shape(s).
+
+```shexc
+;; *schema* (shexc-ts-mode)
+PREFIX ex: <http://example.org/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+ex:PersonShape { ex:age xsd:integer }
+```
+
+```turtle
+;; *data* (turtle-ts-mode)
+@prefix ex: <http://example.org/> .
+ex:alice ex:age 30 .
+ex:bob ex:age "thirty" .
+```
+
+```
+;; *shapemap* (any mode -- it's just text)
+<http://example.org/alice>@<http://example.org/PersonShape>,
+<http://example.org/bob>@<http://example.org/PersonShape>
+```
+
+From the `*data*` buffer, run `M-x shexc-shex-validate-link-buffers`
+and pick `*schema*` and `*shapemap*` at the prompts. This turns on
+`flymake-mode` and registers the validation backend; like any
+`flymake` backend, it doesn't check right away — `M-x flymake-start`
+forces an immediate check (or just wait for `flymake`'s idle timer,
+or save the buffer). Once it runs, `ex:bob`'s line gets the usual
+`flymake` error underline, since `"thirty"` isn't a valid
+`xsd:integer`. Reading the message works exactly like
+[`shexc-ts-mode`'s own flymake diagnostics](#flymake-diagnostics):
+mouse over it, put point on it and check the echo area or `C-h .`, or
+`flymake-goto-next-error`/`flymake-show-buffer-diagnostics`
+(`C-c ! l`). Fix the literal (`30` instead of `"thirty"`) and re-check
+the same way; the underline disappears.
+
+For the full picture — including `ex:alice`, which never shows up in
+`flymake` at all because it conforms — run `M-x
+shexc-shex-validate-show-result-shapemap` from `*data*`. It opens a
+`*ShEx Result ShapeMap: *data**` buffer in a bottom side window, one
+row per node/shape pair, sortable by column:
+
+```
+Node                                     Shape                           Status         Reason
+http://example.org/alice                 http://example.org/PersonShape conformant     Shape passed ...
+http://example.org/bob                   http://example.org/PersonShape nonconformant  Datatype error: ...
+```
+
+`RET` on a row jumps to that node in `*data*`; `g` (`revert-buffer`,
+already bound by the underlying `tabulated-list-mode`) re-runs
+validation and redraws every row in place — edit `*data*` or
+`*schema*`, switch back to the results buffer, hit `g`.
+
+### A few things worth knowing
+
+- The schema and ShapeMap are only re-parsed when their own buffer
+  actually changed since the last check (compared via
+  `buffer-chars-modified-tick`) — the data buffer is always re-read,
+  since that's the one being rechecked. Editing the schema forces the
+  ShapeMap to reload too, even if its own text didn't change (rudof
+  itself re-resolves a ShapeMap against the data/schema currently
+  loaded when it's read).
+- A node is matched back to its position in `*data*` by re-parsing
+  `*data*`'s own Turtle text on the Emacs side (`rdf-turtle.el`'s
+  tree-sitter-based parser, separately from rudof's own parse inside
+  Rust) and indexing every triples-statement subject by its resolved
+  IRI/blank-node label. A node that's only ever an *object* in
+  `*data*` (never a subject) — e.g. a typo'd focus node in the
+  ShapeMap — still gets a diagnostic/row, just without a precise
+  buffer location to point at.
+- `shexc-shex-validate-link-buffers` only needs to run once per data
+  buffer; re-run it (e.g. from a different data buffer) to point a new
+  buffer at the same or different schema/ShapeMap buffers.
+- Module-load/setup failures (path unset, bad schema/data/ShapeMap
+  syntax, etc.) show up as a single whole-buffer `flymake` diagnostic
+  with rudof's own error text, rather than `flymake` silently
+  disabling the backend — so a syntax typo mid-edit in `*schema*`
+  doesn't require manually re-enabling anything once it's fixed.
+
 ## rdf-core
 
 `rdf-core.el` is the shared infrastructure `shexc-ts-mode` and
