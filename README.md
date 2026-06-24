@@ -849,9 +849,9 @@ schema language for RDF graphs, playing roughly the role JSON Schema plays
 for JSON. It's built on the same tree-sitter infrastructure
 (`rdf-core`) as this mode. See [shexc-ts-mode](#shexc-ts-mode) above.
 
-## ShEx conformance checking (`shexc-shex-validate`)
+## ShEx conformance checking (`shex-validate`)
 
-`shexc-shex-validate.el` checks whether RDF data conforms to a ShEx
+`shex-validate.el` checks whether RDF data conforms to a ShEx
 schema, right in the buffer — flagging non-conformant nodes with
 `flymake` and, separately, listing every node/shape result (including
 passing ones) in its own buffer. It bridges `shexc-ts-mode` (the
@@ -871,13 +871,13 @@ cargo build --release -p rudof_emacs
 
 This produces `target/release/librudof_emacs.{dylib,so,dll}` (the
 extension depends on your platform). Then, alongside loading
-`shexc-shex-validate.el` itself:
+`shex-validate.el` itself:
 
 ```lisp
-(add-to-list 'load-path "{folder that contains shexc-shex-validate.el}")
-(require 'shexc-shex-validate)
+(add-to-list 'load-path "{folder that contains shex-validate.el}")
+(require 'shex-validate)
 
-(setq shexc-shex-validate-rudof-module-path
+(setq shex-validate-rudof-module-path
       "/path/to/rudof/target/release/librudof_emacs.dylib")
 ```
 
@@ -906,7 +906,7 @@ ex:bob ex:age "thirty" .
 <http://example.org/bob>@<http://example.org/PersonShape>
 ```
 
-From the `*data*` buffer, run `M-x shexc-shex-validate-link-buffers`
+From the `*data*` buffer, run `M-x shex-validate-link-buffers`
 and pick `*schema*` and `*shapemap*` at the prompts. This turns on
 `flymake-mode` and registers the validation backend; like any
 `flymake` backend, it doesn't check right away — `M-x flymake-start`
@@ -922,7 +922,7 @@ the same way; the underline disappears.
 
 For the full picture — including `ex:alice`, which never shows up in
 `flymake` at all because it conforms — run `M-x
-shexc-shex-validate-show-result-shapemap` from `*data*`. It opens a
+shex-validate-show-result-shapemap` from `*data*`. It opens a
 `*ShEx Result ShapeMap: *data**` buffer in a bottom side window, one
 row per node/shape pair, sortable by column:
 
@@ -954,7 +954,7 @@ validation and redraws every row in place — edit `*data*` or
   `*data*` (never a subject) — e.g. a typo'd focus node in the
   ShapeMap — still gets a diagnostic/row, just without a precise
   buffer location to point at.
-- `shexc-shex-validate-link-buffers` only needs to run once per data
+- `shex-validate-link-buffers` only needs to run once per data
   buffer; re-run it (e.g. from a different data buffer) to point a new
   buffer at the same or different schema/ShapeMap buffers.
 - Module-load/setup failures (path unset, bad schema/data/ShapeMap
