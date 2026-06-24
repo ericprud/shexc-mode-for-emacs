@@ -419,6 +419,36 @@ separators.")
 
 ;;; Indentation
 
+(defun turtle-ts-mode--property-sibling-anchor (_node parent &rest _)
+  "Anchor for every property/`;' in a property_list PARENT *except* the
+first (which never reaches this rule -- see the `property_list' rule's
+own comment below): the indentation of the nearest ancestor *above*
+PARENT that starts its own source line -- the subject/`[' this
+property_list belongs to, or higher still if even that doesn't start
+its own line (e.g. a property whose own predicateObjectList is itself
+mid-way through being indented).
+
+This is exactly the built-in `standalone-parent' preset's own search,
+just seeded one level higher (`(treesit-node-parent parent)' instead
+of PARENT itself): PARENT (property_list) always shares its first
+child's (the first property's) start position, and once that first
+property has *already* been placed on its own indented line -- one
+step in from the subject/`[', via the dedicated rule for it -- the
+property_list itself would incorrectly look \"standalone\" too,
+causing `standalone-parent' to stop right there instead of climbing
+on up to the subject/`[' -- silently adding this rule's own offset
+*again* on top of the first property's already-applied one, compounding
+the indent once per property instead of lining every property up
+together."
+  (save-excursion
+    (let ((node (treesit-node-parent parent)))
+      (catch 'term
+        (while node
+          (goto-char (treesit-node-start node))
+          (when (looking-back (rx bol (* whitespace)) (line-beginning-position))
+            (throw 'term (point)))
+          (setq node (treesit-node-parent node)))))))
+
 (defvar turtle-ts-mode--indent-rules
   `((turtle
      ;; closing delimiters line up with the line that opened the block
@@ -448,11 +478,23 @@ separators.")
      ((parent-is "\\`collection\\'") parent-bol turtle-ts-mode-indent-offset)
      ((parent-is "\\`object_collection\\'") first-sibling 0)
 
-     ;; each `;'-separated property in a property_list indents one step
-     ;; from the line its property_list started on (the subject's line,
-     ;; or a `['s line for a blank-node-property-list) -- all of them,
-     ;; including the first, so they line up with each other
-     ((parent-is "\\`property_list\\'") parent-bol turtle-ts-mode-indent-offset)
+     ;; A property_list directly under `triples' (i.e. the subject's
+     ;; own predicateObjectList) -- this only ever matches the *first*
+     ;; property (or a lone leading `;', though the grammar disallows
+     ;; that): `treesit-simple-indent' climbs from a node to its
+     ;; largest same-start ancestor before applying `parent-is' (see
+     ;; the `collection'/`object_collection' comment above), and a
+     ;; property_list's start always coincides with its first child's,
+     ;; so the first property's *effective* parent is `triples' itself,
+     ;; never `property_list' -- the latter only ever matches the
+     ;; *other* properties, caught below. Mirrors the
+     ;; `blank_node_property_list' rule above exactly, just one
+     ;; structural level up (subject's line instead of a `['s line).
+     ((parent-is "\\`triples\\'") parent-bol turtle-ts-mode-indent-offset)
+
+     ;; Every property/`;' *other* than the first in a property_list
+     ;; (see above) -- see `turtle-ts-mode--property-sibling-anchor'.
+     ((parent-is "\\`property_list\\'") turtle-ts-mode--property-sibling-anchor turtle-ts-mode-indent-offset)
 
      ;; top-level statements start at column 0
      ((parent-is "\\`turtle_doc\\'") column-0 0)
