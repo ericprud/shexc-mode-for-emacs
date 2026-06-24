@@ -640,9 +640,11 @@ error/note face (default: a red/yellow underline) — to read the message:
 - Anywhere, including in a terminal, move point onto the underlined text and
   either look at the echo area, or use `C-h .`
   (`display-local-help`) to show the message on demand.
-- `flymake-goto-next-error`/`-prev-error` jump between diagnostics (printing
-  the message as they go), and `flymake-show-buffer-diagnostics` (`C-c ! l`
-  with the default `flymake` bindings) lists every diagnostic in the buffer.
+- `M-x flymake-goto-next-error`/`-prev-error` jump between diagnostics
+  (printing the message as they go), and `M-x flymake-show-buffer-diagnostics`
+  lists every diagnostic in the buffer. Vanilla `flymake-mode-map` doesn't
+  bind any of these to a key by default (only menu-bar entries) — bind them
+  yourself if you want quicker access.
 
 If point is on `@<#Foo>` and none of the above show anything, first confirm
 `flymake-mode` is on (it should appear in the mode line as `Flymake`) and that
@@ -914,8 +916,8 @@ or save the buffer). Once it runs, `ex:bob`'s line gets the usual
 `xsd:integer`. Reading the message works exactly like
 [`shexc-ts-mode`'s own flymake diagnostics](#flymake-diagnostics):
 mouse over it, put point on it and check the echo area or `C-h .`, or
-`flymake-goto-next-error`/`flymake-show-buffer-diagnostics`
-(`C-c ! l`). Fix the literal (`30` instead of `"thirty"`) and re-check
+`M-x flymake-goto-next-error`/`M-x flymake-show-buffer-diagnostics`
+(no default keybinding for either — see the note above). Fix the literal (`30` instead of `"thirty"`) and re-check
 the same way; the underline disappears.
 
 For the full picture — including `ex:alice`, which never shows up in
