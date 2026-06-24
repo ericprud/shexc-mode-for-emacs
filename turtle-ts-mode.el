@@ -45,12 +45,19 @@
 
 (require 'treesit)
 (require 'hideshow)
+(require 'pcase)
+(require 'transient)
 (require 'rdf-core)
+
+;; defined by `define-derived-mode' below; forward-declared so the
+;; feature menu (which closes over it) can refer to it.
+(defvar turtle-ts-mode-map)
 
 (declare-function treesit-parser-create "treesit.c")
 (declare-function treesit-node-at "treesit.c")
 (declare-function treesit-node-start "treesit.c")
 (declare-function treesit-node-text "treesit.c")
+(declare-function treesit-node-end "treesit.c")
 (declare-function treesit-query-capture "treesit.c")
 
 ;; `M-x turtle-ts-mode-install-grammar' builds `tree-sitter-turtle'; see
@@ -184,6 +191,74 @@ prefix has no entry in any of the active maps."
             (save-excursion (turtle-ts-mode--insert-prefix-decl prefix iri))
             (message "Inserted `@prefix %s: <%s>' (from the %s map)" prefix iri map-name)))))))
 
+;;;###autoload
+(defun turtle-ts-mode-set-prefix-map (names)
+  "Set the buffer-local active prefix map(s) to NAMES, for this buffer
+only -- the `turtle-ts-mode' counterpart of `shexc-ts-mode-set-prefix-map'
+\(see its docstring for the full explanation; identical mechanism, just
+operating on `turtle-ts-mode-prefix-map'/`-prefix-maps' instead)."
+  (interactive
+   (list (completing-read-multiple
+          "Prefix map(s) (first match wins): "
+          (mapcar #'car turtle-ts-mode-prefix-maps)
+          nil t (turtle-ts-mode--prefix-map-names-string))))
+  (when (stringp names) (setq names (list names)))
+  (setq-local turtle-ts-mode-prefix-map (if (cdr names) names (car names)))
+  (message "Active prefix map%s: %s"
+           (if (cdr names) "s" "") (mapconcat #'identity names ", ")))
+
+;;; Switching `@prefix'/`@base' <-> `PREFIX'/`BASE' syntax
+;;
+;; Turtle and SPARQL spell the same prefix/base directive two ways --
+;; `@prefix ex: <iri> .'/`@base <iri> .' (Turtle's own, dot-terminated)
+;; vs. `PREFIX ex: <iri>'/`BASE <iri>' (borrowed from SPARQL, no dot) --
+;; both accepted by the grammar as distinct node types
+;; (`prefix_id'/`base' vs. `sparql_prefix'/`sparql_base'). This toggles
+;; the one at point between the two, preserving the namespace prefix
+;; and IRI text exactly (only the keyword/terminator changes).
+
+(defun turtle-ts-mode--directive-at (pos)
+  "Return the `prefix_id'/`sparql_prefix'/`base'/`sparql_base' node at
+or around POS, or nil."
+  (rdf-core-ancestor-of-type
+   (treesit-node-at pos) '("prefix_id" "sparql_prefix" "base" "sparql_base") t))
+
+(defun turtle-ts-mode--directive-replacement (node)
+  "Replacement text for NODE (a directive node -- see
+`turtle-ts-mode--directive-at'), toggled to the opposite of its
+current `@prefix'/`@base' vs. `PREFIX'/`BASE' syntax."
+  (pcase (treesit-node-type node)
+    ("prefix_id"
+     (format "PREFIX %s %s"
+             (treesit-node-text (rdf-core-child-of-type node "namespace") t)
+             (treesit-node-text (rdf-core-child-of-type node "iri_reference") t)))
+    ("sparql_prefix"
+     (format "@prefix %s %s ."
+             (treesit-node-text (rdf-core-child-of-type node "namespace") t)
+             (treesit-node-text (rdf-core-child-of-type node "iri_reference") t)))
+    ("base"
+     (format "BASE %s" (treesit-node-text (rdf-core-child-of-type node "iri_reference") t)))
+    ("sparql_base"
+     (format "@base %s ." (treesit-node-text (rdf-core-child-of-type node "iri_reference") t)))))
+
+;;;###autoload
+(defun turtle-ts-mode-toggle-prefix-style ()
+  "Toggle the `@prefix'/`@base'/`PREFIX'/`BASE' directive at point
+between Turtle's own dot-terminated syntax and SPARQL's (no dot).
+Operates on the directive nearest point; the namespace prefix name
+and IRI text are preserved exactly, only the keyword/terminator
+changes."
+  (interactive)
+  (let ((node (turtle-ts-mode--directive-at (point))))
+    (unless node
+      (user-error "No `@prefix'/`@base'/`PREFIX'/`BASE' directive at point"))
+    (let ((beg (treesit-node-start node))
+          (end (treesit-node-end node))
+          (replacement (turtle-ts-mode--directive-replacement node)))
+      (goto-char beg)
+      (delete-region beg end)
+      (insert replacement))))
+
 ;;; Folding `[ ... ]'/`( ... )' via hideshow
 ;;
 ;; Unlike `shexc-ts-mode--shape-body-brace-at' (which has to skip past
@@ -218,6 +293,61 @@ of the nearest enclosing `blank_node_property_list'/`collection'."
 
 (add-to-list 'hs-special-modes-alist
              '(turtle-ts-mode "[[(]" "[])]" "#" nil nil))
+
+;;; Feature menu (transient)
+;;
+;; Mirrors `shexc-ts-mode-menu''s structure (a `transient' prefix with
+;; live-keybinding suffix descriptions, a nested submenu for the
+;; prefix-map options) -- scaled down to what `turtle-ts-mode' actually
+;; has: no shape-structure editing or navigation commands to show, so
+;; there's only ever the one "Edit" column, not "Navigate"+"Edit".
+
+(defun turtle-ts-mode--menu-desc (label command &optional width)
+  "Like `shexc-ts-mode--menu-desc', looking COMMAND's binding up in
+`turtle-ts-mode-map' instead."
+  (let ((key (where-is-internal command turtle-ts-mode-map t)))
+    (if key
+        (format (format "%%-%ds %%s" (or width 36)) label (key-description key))
+      label)))
+
+(transient-define-prefix turtle-ts-mode-prefix-menu ()
+  "Submenu of `PREFIX'-declaration commands -- the `turtle-ts-mode'
+counterpart of `shexc-ts-mode-prefix-menu'."
+  ["Prefix maps"
+   ("p" turtle-ts-mode-insert-prefix
+    :description
+    (lambda ()
+      (turtle-ts-mode--menu-desc
+       (format "Insert `@prefix' for prefix at point (%s map)"
+               (turtle-ts-mode--prefix-map-names-string))
+       'turtle-ts-mode-insert-prefix)))
+   ("m" turtle-ts-mode-set-prefix-map
+    :description
+    (lambda ()
+      (turtle-ts-mode--menu-desc
+       (format "Switch active prefix map (currently %s)"
+               (turtle-ts-mode--prefix-map-names-string))
+       'turtle-ts-mode-set-prefix-map)))
+   ("q" "Done" transient-quit-all)])
+
+(transient-define-prefix turtle-ts-mode-menu ()
+  "Feature menu for `turtle-ts-mode', showing live keybindings."
+  ["Edit"
+   ("f" turtle-ts-mode-toggle-fold
+    :description
+    (lambda () (turtle-ts-mode--menu-desc
+                "Fold/unfold `[ ... ]'/`( ... )'"
+                'turtle-ts-mode-toggle-fold 32)))
+   ("k" turtle-ts-mode-toggle-prefix-style
+    :description
+    (lambda () (turtle-ts-mode--menu-desc
+                "`@prefix'/`@base' <-> `PREFIX'/`BASE'"
+                'turtle-ts-mode-toggle-prefix-style 32)))
+   ("p" turtle-ts-mode-prefix-menu
+    :description
+    (lambda ()
+      (format "Prefix map options...           (%s)"
+              (turtle-ts-mode--prefix-map-names-string))))])
 
 ;;; Syntax table
 
@@ -361,9 +491,15 @@ run M-x turtle-ts-mode-install-grammar")))
   ;; up in the active `turtle-ts-mode-prefix-map'
   (define-key turtle-ts-mode-map (kbd "C-c C-p") #'turtle-ts-mode-insert-prefix)
 
+  ;; toggling `@prefix'/`@base' <-> `PREFIX'/`BASE' syntax at point
+  (define-key turtle-ts-mode-map (kbd "C-c C-k") #'turtle-ts-mode-toggle-prefix-style)
+
   ;; folding `[ ... ]'/`( ... )'
   (define-key turtle-ts-mode-map (kbd "C-c C-f") #'turtle-ts-mode-toggle-fold)
   (hs-minor-mode 1)
+
+  ;; Magit-style feature menu
+  (define-key turtle-ts-mode-map (kbd "C-c C-c") #'turtle-ts-mode-menu)
 
   ;; indentation
   (setq-local treesit-simple-indent-rules turtle-ts-mode--indent-rules)

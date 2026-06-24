@@ -3,7 +3,7 @@
 ;; Author: Eric Prud'hommeaux <eric@w3.org>
 ;; Assisted-by: Claude:claude-sonnet-4-6
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (rdf-model "0.1.0") (rdf-store "0.1.0") (rdf-turtle "0.1.0"))
+;; Package-Requires: ((emacs "29.1") (rdf-model "0.1.0") (rdf-store "0.1.0") (rdf-turtle "0.1.0") (shexc-shexj "3.0.0"))
 ;; Keywords: languages
 ;; URL: https://github.com/ericprud/shexc-mode-for-emacs
 ;; SPDX-License-Identifier: MIT
@@ -45,11 +45,13 @@
 
 ;;; Code:
 
+(require 'seq)
 (require 'flymake)
 (require 'rdf-model)
 (require 'rdf-store)
 (require 'rdf-turtle)
 (require 'tabulated-list)
+(require 'shexc-shexj)
 
 ;; Provided by the `rudof_emacs' dynamic module once loaded -- declared
 ;; so the byte-compiler doesn't warn about calls to them further down.
@@ -57,6 +59,10 @@
 (declare-function rudof-emacs-read-shex "rudof_emacs")
 (declare-function rudof-emacs-read-data "rudof_emacs")
 (declare-function rudof-emacs-read-shapemap "rudof_emacs")
+(declare-function treesit-buffer-root-node "treesit.c")
+(declare-function treesit-query-capture "treesit.c")
+(declare-function treesit-node-start "treesit.c")
+(declare-function treesit-node-end "treesit.c")
 (declare-function rudof-emacs-validate-shex "rudof_emacs")
 (declare-function module-load "module.c")
 (declare-function buffer-chars-modified-tick "buffer.c")
@@ -279,7 +285,13 @@ function is called by `tabulated-list-print' (hence: on every `g')."
          (list (cons node shape)
                (vector node shape
                        (propertize status 'face (shexc-shex-validate-results--status-face status))
-                       reason))))
+                       ;; rudof's own `reason' strings routinely carry an
+                       ;; embedded/trailing newline (e.g. "Shape passed
+                       ;; ...\n") -- left alone, `tabulated-list-print'
+                       ;; renders that as a literal line break, silently
+                       ;; splitting one logical row across two buffer
+                       ;; lines and breaking line-based row navigation.
+                       (string-trim (replace-regexp-in-string "\n+" " " reason))))))
      (car checked))))
 
 (defun shexc-shex-validate-results-goto-node ()
@@ -299,6 +311,72 @@ once as a subject there, jumps to the first (topmost) occurrence."
       (pop-to-buffer buffer)
       (goto-char (caar (last spans))))))
 
+;;; Following point: highlighting the node/shape at point
+
+(defface shexc-shex-validate-highlight
+  '((t :inherit highlight))
+  "Face for the node/shape of the result-shapemap row at point,
+highlighted in the data/schema buffers -- see
+`shexc-shex-validate-results--highlight-update'."
+  :group 'shexc-shex-validate)
+
+(defvar-local shexc-shex-validate-results--highlight-overlays nil
+  "Overlays `shexc-shex-validate-results--highlight-update' put in the
+data/schema buffers for the row currently at point.")
+
+(defvar-local shexc-shex-validate-results--highlight-id nil
+  "The `tabulated-list-get-id' last highlighted -- lets
+`shexc-shex-validate-results--highlight-update' no-op while point
+stays on the same row, e.g. on every character typed elsewhere.")
+
+(defun shexc-shex-validate-results--clear-highlight ()
+  (mapc #'delete-overlay shexc-shex-validate-results--highlight-overlays)
+  (setq shexc-shex-validate-results--highlight-overlays nil))
+
+(defun shexc-shex-validate--find-shape-decl (schema-buffer shape)
+  "Return the `shape_expr_label' node in SCHEMA-BUFFER declaring SHAPE
+\(a fully resolved IRI/`_:label' string, matching a
+`rudof-emacs-validate-shex' quadruple's own SHAPE element), or nil.
+Resolves each candidate label the same BASE/PREFIX-aware way
+`shexc-ts-mode''s own flymake backend does
+\(`shexc-shexj-resolve-label'), not by raw source text -- see
+`shexc-ts-mode--flymake-undefined-shapes'."
+  (with-current-buffer schema-buffer
+    (let ((ctx (shexc-shexj-buffer-directive-ctx)))
+      (seq-find
+       (lambda (n) (equal (shexc-shexj-resolve-label ctx n) shape))
+       (treesit-query-capture
+        (treesit-buffer-root-node 'shexc)
+        '((shape_expr_decl label: (shape_expr_label) @label))
+        nil nil t)))))
+
+(defun shexc-shex-validate-results--highlight-update ()
+  "Highlight the row at point's node (in its data buffer) and shape
+\(in its schema buffer), following point -- a buffer-local
+`post-command-hook' in every `shexc-shex-validate-results-mode'
+buffer. A node/shape with no resolvable location (see
+`shexc-shex-validate--diagnostics'/`shexc-shex-validate--find-shape-decl')
+is silently left unhighlighted rather than signaling an error on every
+command."
+  (let ((id (ignore-errors (tabulated-list-get-id))))
+    (unless (equal id shexc-shex-validate-results--highlight-id)
+      (shexc-shex-validate-results--clear-highlight)
+      (setq shexc-shex-validate-results--highlight-id id)
+      (when-let* ((node (car id))
+                  (shape (cdr id))
+                  (data-buffer shexc-shex-validate-results--data-buffer)
+                  ((buffer-live-p data-buffer)))
+        (dolist (span (gethash node shexc-shex-validate-results--positions))
+          (let ((ov (make-overlay (car span) (cdr span) data-buffer)))
+            (overlay-put ov 'face 'shexc-shex-validate-highlight)
+            (push ov shexc-shex-validate-results--highlight-overlays)))
+        (when-let* ((schema-buffer (buffer-local-value 'shexc-shex-validate-schema-buffer data-buffer))
+                    ((buffer-live-p schema-buffer))
+                    (label (shexc-shex-validate--find-shape-decl schema-buffer shape)))
+          (let ((ov (make-overlay (treesit-node-start label) (treesit-node-end label) schema-buffer)))
+            (overlay-put ov 'face 'shexc-shex-validate-highlight)
+            (push ov shexc-shex-validate-results--highlight-overlays)))))))
+
 (defvar-keymap shexc-shex-validate-results-mode-map
   :parent tabulated-list-mode-map
   "RET" #'shexc-shex-validate-results-goto-node
@@ -306,11 +384,16 @@ once as a subject there, jumps to the first (topmost) occurrence."
 
 (define-derived-mode shexc-shex-validate-results-mode tabulated-list-mode "ShEx-Results"
   "Major mode for a ShEx validation result ShapeMap: one row per
-node/shape association, `RET' jumps to that node in the data buffer."
+node/shape association, `RET' jumps to that node in the data buffer.
+Moving point over a row also highlights its node/shape in the
+data/schema buffers -- see
+`shexc-shex-validate-results--highlight-update'."
   (setq tabulated-list-format
         [("Node" 40 t) ("Shape" 30 t) ("Status" 14 t) ("Reason" 0 t)])
   (setq tabulated-list-padding 2)
-  (tabulated-list-init-header))
+  (tabulated-list-init-header)
+  (add-hook 'post-command-hook #'shexc-shex-validate-results--highlight-update nil t)
+  (add-hook 'kill-buffer-hook #'shexc-shex-validate-results--clear-highlight nil t))
 
 ;;;###autoload
 (defun shexc-shex-validate-show-result-shapemap (&optional data-buffer)

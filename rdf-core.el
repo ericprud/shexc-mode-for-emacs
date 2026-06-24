@@ -37,6 +37,8 @@
 (declare-function treesit-node-type "treesit.c")
 (declare-function treesit-node-start "treesit.c")
 (declare-function treesit-node-text "treesit.c")
+(declare-function treesit-node-child "treesit.c")
+(declare-function treesit-node-child-count "treesit.c")
 (declare-function treesit-install-language-grammar "treesit.c")
 (declare-function treesit-language-available-p "treesit.c")
 
@@ -257,6 +259,15 @@ If INCLUDE-NODE is non-nil, NODE itself is considered first."
    node
    (lambda (n) (member (treesit-node-type n) types))
    include-node))
+
+(defun rdf-core-child-of-type (node type)
+  "First named child of NODE whose type is TYPE, or nil."
+  (let ((n (treesit-node-child-count node t)) (i 0) (found nil))
+    (while (and (< i n) (not found))
+      (let ((c (treesit-node-child node i t)))
+        (when (equal (treesit-node-type c) type) (setq found c)))
+      (setq i (1+ i)))
+    found))
 
 ;;; Xref helpers
 ;;
