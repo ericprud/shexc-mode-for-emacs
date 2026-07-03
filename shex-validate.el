@@ -13,33 +13,36 @@
 ;; A `flymake-diagnostic-functions' backend that tags non-conformant
 ;; RDF nodes directly in a Turtle (data) buffer, by validating it
 ;; against a separate ShExC schema buffer and a separate ShapeMap
-;; buffer through the `rudof_emacs' dynamic module
-;; (https://github.com/rudof-project/rudof's `rudof_emacs' crate --
+;; buffer through the `emacs-rudof' dynamic module
+;; (https://github.com/rudof-project/rudof's `emacs-rudof' crate --
 ;; not yet released; build it yourself with `cargo build --release -p
-;; rudof_emacs' against a `rudof' checkout and point
+;; emacs-rudof' against a `rudof' checkout and point
 ;; `shex-validate-rudof-module-path' at the resulting shared
-;; library).
+;; library). Also accepts a module built before that crate's
+;; `rudof_emacs' -> `emacs-rudof' rename -- see
+;; `shex-validate--upgrade-module-path' and
+;; `shex-validate--rudof-fn'.
 ;;
 ;; Three buffers, one `flymake-mode': the data buffer is the one this
 ;; backend actually attaches to (`shex-validate-link-buffers');
 ;; the schema and ShapeMap buffers are just plain text it reads from,
-;; not buffers it adds any backend to themselves. `rudof_emacs' is a
+;; not buffers it adds any backend to themselves. `emacs-rudof' is a
 ;; *held*, mutable handle (a `user-ptr'), not a one-shot CLI
 ;; invocation -- so this backend only re-reads the schema/ShapeMap
 ;; buffers when their own `buffer-chars-modified-tick' has actually
 ;; changed since last loaded, and always re-reads the data buffer
 ;; (the one flymake is actually rechecking) every time. See
-;; `rudof_emacs/README.md''s "Load order matters" section for why
+;; `emacs-rudof''s own README's "Load order matters" section for why
 ;; schema+data must both be (re)loaded before the ShapeMap.
 ;;
 ;; Mapping a validation result's node string back to a position in
 ;; the data buffer (so flymake has somewhere to put the squiggly line)
 ;; uses `rdf-turtle-parse-buffer''s POSITIONS argument -- a *second*,
-;; purely Emacs-side parse of the same buffer text `rudof-emacs-read-data'
+;; purely Emacs-side parse of the same buffer text `rudof-read-data'
 ;; also parses inside Rust. Deliberately not merged into one parse:
-;; keeps this file independent of `rudof_emacs' internals (it only
+;; keeps this file independent of `emacs-rudof' internals (it only
 ;; ever sees the same plain node/shape/status/reason strings any other
-;; caller of `rudof-emacs-validate-shex' would), at the cost of
+;; caller of `rudof-validate-shex' would), at the cost of
 ;; parsing the buffer's Turtle text twice per check -- fine for
 ;; interactive use, revisit if it ever shows up in profiling.
 
@@ -53,17 +56,15 @@
 (require 'tabulated-list)
 (require 'shexc-shexj)
 
-;; Provided by the `rudof_emacs' dynamic module once loaded -- declared
-;; so the byte-compiler doesn't warn about calls to them further down.
-(declare-function rudof-emacs-new "rudof_emacs")
-(declare-function rudof-emacs-read-shex "rudof_emacs")
-(declare-function rudof-emacs-read-data "rudof_emacs")
-(declare-function rudof-emacs-read-shapemap "rudof_emacs")
+;; The `emacs-rudof' dynamic module's own functions (`rudof-new',
+;; `rudof-read-shex', etc., or a pre-rename module's `rudof-emacs-new'
+;; etc. -- see `shex-validate--rudof-fn') are resolved by name at call
+;; time via `funcall'/`intern', never called literally, so no
+;; `declare-function' for them is needed or possible here.
 (declare-function treesit-buffer-root-node "treesit.c")
 (declare-function treesit-query-capture "treesit.c")
 (declare-function treesit-node-start "treesit.c")
 (declare-function treesit-node-end "treesit.c")
-(declare-function rudof-emacs-validate-shex "rudof_emacs")
 (declare-function module-load "module.c")
 (declare-function buffer-chars-modified-tick "buffer.c")
 
@@ -72,10 +73,16 @@
   :group 'shexc-ts)
 
 (defcustom shex-validate-rudof-module-path nil
-  "Path to the built `rudof_emacs' dynamic module
-\(`librudof_emacs.dylib'/`.so'/`.dll', depending on platform), e.g.
-\"~/checkouts/rudof-project/rudof/target/release/librudof_emacs.dylib\".
-Required before any `shex-validate' function can run."
+  "Path to the built `emacs-rudof' dynamic module
+\(`libemacs_rudof.dylib'/`.so'/`.dll', depending on platform), e.g.
+\"~/checkouts/rudof-project/rudof/target/release/libemacs_rudof.dylib\".
+Required before any `shex-validate' function can run.
+
+A path to the older, pre-rename `librudof_emacs.dylib'/`.so'/`.dll'
+also works -- see `shex-validate--upgrade-module-path', which
+transparently swaps it for a same-directory `libemacs_rudof' build if
+one exists, and `shex-validate--rudof-fn', which falls back to that
+older module's own `rudof-emacs-' function prefix if it doesn't."
   :type '(choice (const :tag "Not configured" nil) file)
   :group 'shex-validate)
 
@@ -93,7 +100,7 @@ directly.")
 `shex-validate-link-buffers', not directly.")
 
 (defvar-local shex-validate--rudof nil
-  "This buffer's held `rudof-emacs-new' handle, created lazily on the
+  "This buffer's held `rudof-new' handle, created lazily on the
 first check and reused (mutated in place) on every later one.")
 
 (defvar-local shex-validate--schema-tick nil
@@ -110,15 +117,66 @@ actually changed.")
 
 ;;; Module loading
 
+(defvar shex-validate--fn-prefix nil
+  "Which Lisp function prefix the loaded `emacs-rudof' dynamic module
+actually exposes its functions under: \"rudof-\" for a module built
+after the crate's `rudof_emacs' -> `emacs-rudof' rename, or the older
+\"rudof-emacs-\" for one built before it. A module only ever exposes
+one or the other, and once loaded stays loaded for the rest of the
+Emacs session -- so this is resolved at most once (by
+`shex-validate--ensure-module'), never per buffer. nil beforehand.")
+
+(defun shex-validate--upgrade-module-path (path)
+  "If PATH is the older, pre-rename `librudof_emacs' dynamic module
+\(from before the `emacs-rudof' crate's own `rudof_emacs' ->
+`emacs-rudof' rename) and a `libemacs_rudof' sibling exists in the
+same directory -- e.g. PATH is a stale `shex-validate-rudof-module-path'
+left over from before a rebuild -- return that sibling's path instead,
+so the newer module is preferred without editing the option by hand.
+Otherwise (PATH already names a `libemacs_rudof' module, or no such
+sibling exists -- an old build that hasn't been redone since the
+rename) returns PATH unchanged; `shex-validate--rudof-fn' below is
+what makes loading the old module still work in that case."
+  (let* ((dir (or (file-name-directory path) default-directory))
+         (base (file-name-nondirectory path)))
+    (if (string-prefix-p "librudof_emacs" base)
+        (let* ((new-base (concat "libemacs_rudof" (substring base (length "librudof_emacs"))))
+               (candidate (expand-file-name new-base dir)))
+          (if (file-exists-p candidate)
+              (progn
+                (message "shex-validate: %s is the pre-rename module name; using %s instead"
+                         base new-base)
+                candidate)
+            path))
+      path)))
+
+(defun shex-validate--rudof-fn (name)
+  "Resolve NAME (a symbol suffix, e.g. `new'/`read-shex') to whichever
+of the current (`rudof-NAME') or pre-rename (`rudof-emacs-NAME')
+function symbols the loaded module actually bound, per
+`shex-validate--fn-prefix' -- set by `shex-validate--ensure-module',
+which must run first."
+  (unless shex-validate--fn-prefix
+    (error "shex-validate--rudof-fn called before shex-validate--ensure-module"))
+  (intern (concat shex-validate--fn-prefix (symbol-name name))))
+
 (defun shex-validate--ensure-module ()
-  "Load the `rudof_emacs' dynamic module if it isn't already."
-  (unless (fboundp 'rudof-emacs-new)
-    (unless shex-validate-rudof-module-path
-      (user-error "Set `shex-validate-rudof-module-path' to the built rudof_emacs module first"))
-    (module-load (expand-file-name shex-validate-rudof-module-path))
-    (unless (fboundp 'rudof-emacs-new)
-      (error "Loaded %s but `rudof-emacs-new' is still unbound"
-             shex-validate-rudof-module-path))))
+  "Load the `emacs-rudof' dynamic module (or a pre-rename
+`rudof_emacs' one) if it isn't already, and resolve
+`shex-validate--fn-prefix' from whichever it turns out to be."
+  (unless shex-validate--fn-prefix
+    (unless (or (fboundp 'rudof-new) (fboundp 'rudof-emacs-new))
+      (unless shex-validate-rudof-module-path
+        (user-error "Set `shex-validate-rudof-module-path' to the built emacs-rudof module first"))
+      (module-load
+       (shex-validate--upgrade-module-path
+        (expand-file-name shex-validate-rudof-module-path))))
+    (setq shex-validate--fn-prefix
+          (cond
+           ((fboundp 'rudof-new) "rudof-")
+           ((fboundp 'rudof-emacs-new) "rudof-emacs-")
+           (t (error "Loaded %s but neither `rudof-new' nor `rudof-emacs-new' is bound"
+                     shex-validate-rudof-module-path))))))
 
 (defun shex-validate--buffer-base-iri (buffer)
   "A \"file://...\" URI for BUFFER's file, or nil if it has none --
@@ -133,7 +191,7 @@ passed as ShExC/Turtle's BASE so relative IRIs (including ShExC
   "Validate the current (data) buffer against
 `shex-validate-schema-buffer' per
 `shex-validate-shapemap-buffer', returning
-`rudof-emacs-validate-shex''s result. Signals `user-error' if either
+`rudof-validate-shex''s result. Signals `user-error' if either
 buffer is unset/no longer live."
   (shex-validate--ensure-module)
   (unless (and shex-validate-schema-buffer (buffer-live-p shex-validate-schema-buffer))
@@ -141,11 +199,11 @@ buffer is unset/no longer live."
   (unless (and shex-validate-shapemap-buffer (buffer-live-p shex-validate-shapemap-buffer))
     (user-error "No live ShapeMap buffer linked -- see `shex-validate-link-buffers'"))
   (unless shex-validate--rudof
-    (setq shex-validate--rudof (rudof-emacs-new)))
+    (setq shex-validate--rudof (funcall (shex-validate--rudof-fn 'new))))
   (let ((schema-tick (buffer-chars-modified-tick shex-validate-schema-buffer))
         (shapemap-tick (buffer-chars-modified-tick shex-validate-shapemap-buffer)))
     (unless (equal schema-tick shex-validate--schema-tick)
-      (rudof-emacs-read-shex
+      (funcall (shex-validate--rudof-fn 'read-shex)
        shex-validate--rudof
        (with-current-buffer shex-validate-schema-buffer (buffer-string))
        nil
@@ -155,18 +213,18 @@ buffer is unset/no longer live."
       ;; against the *previous* schema too, even if the ShapeMap
       ;; buffer's own text didn't change -- force its reload below.
       (setq shex-validate--shapemap-tick nil))
-    (rudof-emacs-read-data
+    (funcall (shex-validate--rudof-fn 'read-data)
      shex-validate--rudof
      (buffer-string)
      nil
      (shex-validate--buffer-base-iri (current-buffer)))
     (unless (equal shapemap-tick shex-validate--shapemap-tick)
-      (rudof-emacs-read-shapemap
+      (funcall (shex-validate--rudof-fn 'read-shapemap)
        shex-validate--rudof
        (with-current-buffer shex-validate-shapemap-buffer (buffer-string))
        nil nil nil)
       (setq shex-validate--shapemap-tick shapemap-tick))
-    (rudof-emacs-validate-shex shex-validate--rudof)))
+    (funcall (shex-validate--rudof-fn 'validate-shex) shex-validate--rudof)))
 
 (defun shex-validate--check-with-positions (data-buffer)
   "Run `shex-validate--check' in DATA-BUFFER and return
@@ -186,7 +244,7 @@ same underlying check."
 
 (defun shex-validate--diagnostics (quadruples positions)
   "Build `flymake-diagnostic' objects for the current (data) buffer
-from QUADRUPLES (`rudof-emacs-validate-shex''s result) and POSITIONS
+from QUADRUPLES (`rudof-validate-shex''s result) and POSITIONS
 \(`rdf-turtle-parse-buffer''s subject-position table for this same
 buffer's current text). \"conformant\"/\"pending\" associations
 produce no diagnostic. A node that never occurs as a subject in this
@@ -272,7 +330,7 @@ own."
 
 (defun shex-validate-results--entries (data-buffer)
   "`tabulated-list-entries' for DATA-BUFFER: validate it and return one
-entry per `rudof-emacs-validate-shex' quadruple, ID'd by `(NODE
+entry per `rudof-validate-shex' quadruple, ID'd by `(NODE
 . SHAPE)' (a ShapeMap's node/shape associations are themselves a set,
 so this is already unique). Refreshes
 `shex-validate-results--positions' as a side effect, since this
@@ -336,7 +394,7 @@ stays on the same row, e.g. on every character typed elsewhere.")
 (defun shex-validate--find-shape-decl (schema-buffer shape)
   "Return the `shape_expr_label' node in SCHEMA-BUFFER declaring SHAPE
 \(a fully resolved IRI/`_:label' string, matching a
-`rudof-emacs-validate-shex' quadruple's own SHAPE element), or nil.
+`rudof-validate-shex' quadruple's own SHAPE element), or nil.
 Resolves each candidate label the same BASE/PREFIX-aware way
 `shexc-ts-mode''s own flymake backend does
 \(`shexc-shexj-resolve-label'), not by raw source text -- see
