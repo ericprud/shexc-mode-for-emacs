@@ -167,19 +167,28 @@ tree-sitter parser already created, as `(current-buffer)'."
 ;;; `shex-manifest-browser--content-buffer' reuse/reap policy
 
 (ert-deftest shex-manifest-browser-test-content-buffer-reused-when-unmodified ()
-  (let ((b1 (shex-manifest-browser--content-buffer 'data "reuse-test" "one" nil)))
+  (let ((b1 (shex-manifest-browser--content-buffer 'data "reuse-test" "one" nil "/tmp/")))
     (unwind-protect
-        (let ((b2 (shex-manifest-browser--content-buffer 'data "reuse-test" "two" nil)))
+        (let ((b2 (shex-manifest-browser--content-buffer 'data "reuse-test" "two" nil "/tmp/")))
           (should (eq b1 b2))
           (should (equal (with-current-buffer b2 (buffer-string)) "two")))
       (kill-buffer b1))))
 
+(ert-deftest shex-manifest-browser-test-content-buffer-sets-default-directory ()
+  "A freshly created buffer otherwise inherits `default-directory'
+unpredictably from whatever buffer happened to be current -- see the
+regression this guards against in this file's own history."
+  (let ((b1 (shex-manifest-browser--content-buffer 'data "dir-test" "x" nil "/tmp/some/dir/")))
+    (unwind-protect
+        (should (equal (with-current-buffer b1 default-directory) "/tmp/some/dir/"))
+      (kill-buffer b1))))
+
 (ert-deftest shex-manifest-browser-test-content-buffer-new-when-modified ()
-  (let ((b1 (shex-manifest-browser--content-buffer 'data "modified-test" "one" nil)))
+  (let ((b1 (shex-manifest-browser--content-buffer 'data "modified-test" "one" nil "/tmp/")))
     (unwind-protect
         (progn
           (with-current-buffer b1 (insert "operator edit"))
-          (let ((b2 (shex-manifest-browser--content-buffer 'data "modified-test" "two" nil)))
+          (let ((b2 (shex-manifest-browser--content-buffer 'data "modified-test" "two" nil "/tmp/")))
             (unwind-protect
                 (progn
                   (should-not (eq b1 b2))

@@ -990,3 +990,22 @@ concern.
 Some hints to help contributers:
 - *Actions* -- for a feature branch `rdf-data-model`, run:
     gh workflow run melpa-build.yml --ref rdf-data-model
+- *Trying local/uncommitted changes* -- `try-packages.el` at the repo
+  root loads this checkout's own `.el` files directly (`shexc-ts-mode`,
+  `shex-validate`, `shex-manifest-browser`), bypassing
+  `package.el`/MELPA entirely, so edits here are visible immediately
+  without reinstalling anything. Launch Emacs with it loaded:
+    emacs -Q --load try-packages.el path/to/some-file.shex
+  It also sets a few personal convenience keybindings
+  (`windmove`, `text-scale-increase`/`-decrease`, buffer-switching) and
+  `shex-validate-rudof-module-path` -- both are this repo's own
+  contributor's personal setup, not a documented convention, so adjust
+  or drop them freely; in particular, the `rudof` path is relative and
+  assumes a specific checkout layout (a sibling `rudof` checkout, found
+  via `../../rudof/...` from wherever Emacs is actually launched from,
+  not necessarily this repo's root) -- point it at your own local
+  [`emacs-rudof`](https://github.com/rudof-project/rudof) build if
+  that doesn't match your layout. This is a plain dev-convenience
+  script, not an ERT suite -- see [Packaging](#packaging) above for
+  how `*-tests.el` files (ERT, `ert-deftest`) are named and excluded
+  from the built package instead.

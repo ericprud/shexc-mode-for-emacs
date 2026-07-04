@@ -114,12 +114,22 @@ last returned for it.")
 (defun shex-manifest-browser--buffer-name (kind label)
   (format "*%s%s*" (symbol-name kind) (if label (concat ": " label) "")))
 
-(defun shex-manifest-browser--content-buffer (kind label content mode-fn)
+(defun shex-manifest-browser--content-buffer (kind label content mode-fn manifest-dir)
   "Return a live buffer holding CONTENT, named from KIND (`schema'/
 `data'/`queryMap'/`shapemap') and LABEL (a string, or nil for a bare
 \"*KIND*\"), with MODE-FN (a major-mode function, or nil for
 `fundamental-mode') applied.  See this file's Commentary for the
-reuse/reap policy."
+reuse/reap policy.
+
+MANIFEST-DIR becomes the buffer's own `default-directory' -- a
+freshly `generate-new-buffer'd buffer otherwise just inherits
+whatever buffer happened to be current when it was created (an
+Emacs-wide convention, not this mode's own doing), which for a
+reused/temp buffer with no file of its own is unpredictable and
+buffer-history-dependent, not the manifest's own location a relative
+path *within* CONTENT (e.g. a ShExC `IMPORT', or -- confirmed
+empirically -- a relative `shex-validate-rudof-module-path') would
+sensibly resolve against."
   (let* ((key (cons kind label))
          (existing (gethash key shex-manifest-browser--owned-buffers))
          (buffer (if (and existing (buffer-live-p existing) (not (buffer-modified-p existing)))
@@ -130,6 +140,7 @@ reuse/reap policy."
       (erase-buffer)
       (insert content)
       (goto-char (point-min))
+      (setq default-directory manifest-dir)
       (set-buffer-modified-p nil))
     (puthash key buffer shex-manifest-browser--owned-buffers)
     buffer))
@@ -149,7 +160,7 @@ reuse/reap policy."
       (shex-manifest-browser--content-buffer
        'schema (shex-manifest-browser--get entry 'schemaLabel)
        (or (shex-manifest-browser--get entry 'schema) "")
-       #'shex-manifest-browser--schema-mode))))
+       #'shex-manifest-browser--schema-mode manifest-dir))))
 
 (defun shex-manifest-browser--data-buffer (entry manifest-dir)
   (let ((url (shex-manifest-browser--get entry 'dataURL)))
@@ -158,7 +169,7 @@ reuse/reap policy."
       (shex-manifest-browser--content-buffer
        'data (shex-manifest-browser--get entry 'dataLabel)
        (or (shex-manifest-browser--get entry 'data) "")
-       #'shex-manifest-browser--data-mode))))
+       #'shex-manifest-browser--data-mode manifest-dir))))
 
 (defun shex-manifest-browser--querymap-text (entry manifest-dir)
   "The entry's raw queryMap text, from `queryMap' or `queryMapURL'."
@@ -176,7 +187,7 @@ operator to inspect -- not what's actually linked for validation, see
   (shex-manifest-browser--content-buffer
    'queryMap (shex-manifest-browser--get entry 'dataLabel)
    (shex-manifest-browser--querymap-text entry manifest-dir)
-   nil))
+   nil manifest-dir))
 
 ;;; queryMap resolution: `{FOCUS ...}'/`{... FOCUS}' patterns, `!' negation
 ;;
@@ -481,7 +492,7 @@ full per-association result table (`shex-validate-show-result-shapemap')."
       (let* ((assocs (shex-manifest-browser--resolve-querymap querymap-text data-buffer))
              (shapemap-buffer (shex-manifest-browser--content-buffer
                                'shapemap (shex-manifest-browser--get entry 'dataLabel)
-                               (shex-manifest-browser--shapemap-text assocs) nil)))
+                               (shex-manifest-browser--shapemap-text assocs) nil manifest-dir)))
         (with-current-buffer data-buffer
           (setq-local shex-validate--rudof nil)
           (setq-local shex-validate--schema-tick nil)
