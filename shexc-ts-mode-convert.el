@@ -825,7 +825,8 @@ ShExR never shorten), directly comparable against
 `treesit-parser-list', the implicit default `treesit-buffer-root-node'/
 `treesit-node-at' use) again, after the embedded parsers below were
 created -- see this section's Commentary just above."
-  (let ((old (car (treesit-parser-list nil 'shexc))))
+  (let ((old (car (seq-filter (lambda (p) (eq (treesit-parser-language p) 'shexc))
+                               (treesit-parser-list)))))
     (when old (treesit-parser-delete old)))
   (setq-local treesit-primary-parser (treesit-parser-create 'shexc)))
 

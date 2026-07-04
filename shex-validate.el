@@ -222,7 +222,9 @@ buffer is unset/no longer live."
       (funcall (shex-validate--rudof-fn 'read-shapemap)
        shex-validate--rudof
        (with-current-buffer shex-validate-shapemap-buffer (buffer-string))
-       nil nil nil)
+       nil
+       (shex-validate--buffer-base-iri (current-buffer))
+       (shex-validate--buffer-base-iri shex-validate-schema-buffer))
       (setq shex-validate--shapemap-tick shapemap-tick))
     (funcall (shex-validate--rudof-fn 'validate-shex) shex-validate--rudof)))
 
