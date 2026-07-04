@@ -1,0 +1,92 @@
+---
+# Manifest for `shex-manifest-browser' -- see that file's Commentary
+# for the format (compatible with shex.js/shex-webapp's own
+# examples/manifest.yaml: schema/data/queryMap inline, or schemaURL/
+# dataURL/queryMapURL by reference, resolved relative to this file's
+# own directory).
+#
+# The first three entries capture the `BASE'-resolution regression
+# covered interactively while fixing `shex-validate--check' (relative
+# vs. absolute shape references in a ShapeMap, resolved against the
+# schema's own `BASE', not its file location or the data buffer's).
+# The remaining entries exercise `queryMap''s `{FOCUS pred obj}'/
+# `{subj pred FOCUS}' pattern and `@START' resolution.
+
+- schemaLabel: shex-validate BASE resolution
+  schemaURL: ../example/person-extends.shex
+  dataLabel: Manager, absolute shape IRI
+  data: |
+    PREFIX ex: <http://a.example/ns#>
+
+    <http://a.example/node1> ex:id <http://a.example/id1> ; ex:rolls ex:Manager .
+  queryMap: "<http://a.example/node1>@<http://a.example/Item>\n"
+  status: conformant
+
+- schemaLabel: shex-validate BASE resolution
+  schemaURL: ../example/person-extends.shex
+  dataLabel: Manager, relative shape IRI (schema's own BASE)
+  data: |
+    PREFIX ex: <http://a.example/ns#>
+
+    <http://a.example/node1> ex:id <http://a.example/id1> ; ex:rolls ex:Manager .
+  queryMap: "<http://a.example/node1>@<Item>\n"
+  status: conformant
+
+- schemaLabel: shex-validate BASE resolution
+  schemaURL: ../example/person-extends.shex
+  dataLabel: Manager validated against RoleCode (value set mismatch)
+  data: |
+    PREFIX ex: <http://a.example/ns#>
+
+    <http://a.example/node1> ex:id <http://a.example/id1> ; ex:rolls ex:Manager .
+  queryMap: "<http://a.example/node1>@<RoleCode>\n"
+  status: nonconformant
+
+- schemaLabel: FOCUS/START queryMap resolution
+  schema: |
+    BASE <http://a.example/>
+    PREFIX ex: <http://a.example/ns#>
+
+    start = @<Item>
+
+    <Item> { ex:status ["final" "preliminary"] }
+  dataLabel: one item, final status
+  data: |
+    PREFIX ex: <http://a.example/ns#>
+
+    <http://a.example/obs1> ex:status "final" .
+  queryMap: "{FOCUS ex:status _}@START\n"
+  status: conformant
+
+- schemaLabel: FOCUS/START queryMap resolution
+  schema: |
+    BASE <http://a.example/>
+    PREFIX ex: <http://a.example/ns#>
+
+    start = @<Item>
+
+    <Item> { ex:status ["final" "preliminary"] }
+  dataLabel: one item, unrecognized status
+  data: |
+    PREFIX ex: <http://a.example/ns#>
+
+    <http://a.example/obs2> ex:status "unknown" .
+  queryMap: "{FOCUS ex:status _}@START\n"
+  status: nonconformant
+
+- schemaLabel: FOCUS object-position queryMap resolution
+  schema: |
+    BASE <http://a.example/>
+    PREFIX ex: <http://a.example/ns#>
+
+    start = @<Manager>
+
+    <Manager> { ex:id . }
+  dataLabel: manager referenced as object
+  data: |
+    PREFIX ex: <http://a.example/ns#>
+
+    <http://a.example/team1> ex:manager <http://a.example/mgr1> .
+    <http://a.example/mgr1> ex:id <http://a.example/mgr1id> .
+  queryMap: "{_ ex:manager FOCUS}@START\n"
+  status: conformant

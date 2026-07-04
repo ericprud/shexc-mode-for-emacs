@@ -185,6 +185,20 @@ passed as ShExC/Turtle's BASE so relative IRIs (including ShExC
   (let ((file (buffer-file-name buffer)))
     (and file (concat "file://" file))))
 
+(defun shex-validate--schema-shapemap-base-iri (schema-buffer)
+  "The base IRI a ShapeMap's relative shape references should resolve
+against, given SCHEMA-BUFFER already loaded via `read-shex' with
+`shex-validate--buffer-base-iri' as its own BASE: SCHEMA-BUFFER's own
+final `BASE <...>' directive if it declares one -- since that,
+not its file location, is then what `read-shex' actually resolved
+that schema's own relative shape labels against -- or
+`shex-validate--buffer-base-iri' otherwise, matching `read-shex''s
+default when SCHEMA-BUFFER declares no BASE of its own."
+  (or (with-current-buffer schema-buffer
+        (ignore-errors
+          (shexc-shexj--ctx-base (shexc-shexj-buffer-directive-ctx))))
+      (shex-validate--buffer-base-iri schema-buffer)))
+
 ;;; Running a check
 
 (defun shex-validate--check ()
@@ -224,7 +238,7 @@ buffer is unset/no longer live."
        (with-current-buffer shex-validate-shapemap-buffer (buffer-string))
        nil
        (shex-validate--buffer-base-iri (current-buffer))
-       (shex-validate--buffer-base-iri shex-validate-schema-buffer))
+       (shex-validate--schema-shapemap-base-iri shex-validate-schema-buffer))
       (setq shex-validate--shapemap-tick shapemap-tick))
     (funcall (shex-validate--rudof-fn 'validate-shex) shex-validate--rudof)))
 
