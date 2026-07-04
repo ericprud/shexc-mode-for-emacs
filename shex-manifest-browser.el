@@ -66,7 +66,9 @@
 (require 'tabulated-list)
 (require 'shexc-ts-mode)
 (require 'turtle-ts-mode)
+(require 'yaml-mode nil t)
 
+(declare-function yaml-mode "yaml-mode")
 (declare-function treesit-ready-p "treesit.c")
 (declare-function treesit-parser-create "treesit.c")
 (declare-function treesit-buffer-root-node "treesit.c")
@@ -366,12 +368,20 @@ mismatch."
       (substring text 1 (1- (length text)))
     text))
 
+;; `permanent-local': survive `shex-manifest-browser-toggle-display'
+;; switching the buffer's major mode back and forth (any major-mode
+;; function calls `kill-all-local-variables', which would otherwise
+;; wipe these) -- see `shex-manifest-browser--show-yaml'/`--show-table'.
 (defvar-local shex-manifest-browser--manifest-file nil)
+(put 'shex-manifest-browser--manifest-file 'permanent-local t)
 (defvar-local shex-manifest-browser--manifest-dir nil)
+(put 'shex-manifest-browser--manifest-dir 'permanent-local t)
 (defvar-local shex-manifest-browser--entries nil)
+(put 'shex-manifest-browser--entries 'permanent-local t)
 (defvar-local shex-manifest-browser--results nil
   "Hash table, entry index -> (PASS . DETAILS), filled in by
 `shex-manifest-browser-run-entry'/`shex-manifest-browser-run-all'.")
+(put 'shex-manifest-browser--results 'permanent-local t)
 
 ;;; Side-by-side display, node/shape highlighting
 
@@ -570,24 +580,155 @@ every resize."
       (tabulated-list-init-header)
       (tabulated-list-print t))))
 
+;;; Toggling table <-> raw YAML display, `image-toggle-display'-style
+;;
+;; Mirrors `image-mode's own `image-toggle-display'/`image-mode-as-
+;; text'/`image-minor-mode' trio: the *table* state is a real major
+;; mode (`shex-manifest-browser-mode' itself); the *YAML* state uses
+;; whatever major mode is otherwise appropriate for editing YAML
+;; (`yaml-mode' if installed, `fundamental-mode' otherwise) plus
+;; `shex-manifest-browser-yaml-view-mode', a minor mode whose only job
+;; is keeping `C-c C-c' bound back to
+;; `shex-manifest-browser-toggle-display' regardless of major mode.
+;; Unlike an image file, the YAML view is real, editable, saveable
+;; text -- `buffer-file-name' is attached to the manifest file while
+;; showing it (detached again once back in table view, so `C-x C-s'
+;; can't clobber the manifest with a rendered table -- see
+;; `shex-manifest-browser-mode's own Commentary on why).
+
+(defvar-keymap shex-manifest-browser-yaml-view-mode-map
+  "C-c C-c" #'shex-manifest-browser-toggle-display)
+
+(define-minor-mode shex-manifest-browser-yaml-view-mode
+  "Minor mode turned on while a `shex-manifest-browser' buffer shows
+its manifest's raw YAML text rather than the terse tabulated-list
+view -- provides `C-c C-c' (`shex-manifest-browser-toggle-display') to
+switch back, regardless of whatever major mode is actually editing
+the YAML."
+  :lighter " YAML-view")
+
+(defun shex-manifest-browser--entry-start-position (index)
+  "Position of manifest entry INDEX's (0-indexed, matching
+`tabulated-list-get-id') own `- ...' line in the current buffer's YAML
+text.  Assumes the standard, unindented `- key: value' top-level
+sequence-item marker this format's entries always start with (true of
+every manifest this package has ever produced or read -- see this
+file's own Commentary) rather than doing a real YAML parse, which
+would need `yaml-parse-string-with-pos', still explicitly marked
+experimental as of this package's own `yaml' dependency version."
+  (save-excursion
+    (goto-char (point-min))
+    (let (pos)
+      (dotimes (_ (1+ index))
+        (unless (re-search-forward "^- " nil t)
+          (error "shex-manifest-browser: fewer than %d entries found in this manifest's YAML text"
+                 (1+ index)))
+        (setq pos (match-beginning 0)))
+      pos)))
+
+(defun shex-manifest-browser--entry-index-at-point ()
+  "Which manifest entry (0-indexed, matching `tabulated-list-get-id')
+point is within, in the current buffer's YAML text -- the reverse of
+`shex-manifest-browser--entry-start-position'.  nil if point is before
+the first entry's `- ...' line (e.g. still within a leading comment
+block)."
+  (save-excursion
+    (let ((here (point)) (index -1))
+      (goto-char (point-min))
+      (while (and (re-search-forward "^- " nil t) (<= (match-beginning 0) here))
+        (setq index (1+ index)))
+      (and (>= index 0) index))))
+
+(defun shex-manifest-browser--goto-entry-row (index)
+  "Move point to the row for manifest entry INDEX (0-indexed) in the
+current (already redrawn) tabulated-list buffer -- wherever it
+currently sits, not assuming file order, since `tabulated-list-mode's
+own column sorting can reorder rows."
+  (goto-char (point-min))
+  (while (and (not (eobp)) (not (equal (tabulated-list-get-id) index)))
+    (forward-line 1)))
+
+(defun shex-manifest-browser--show-yaml (&optional index)
+  "Switch this (already `shex-manifest-browser-mode') buffer to its
+manifest's raw YAML text, editable and saveable back to the real
+file -- the other half of `shex-manifest-browser-toggle-display'.
+INDEX, if non-nil, is which entry (0-indexed, as `tabulated-list-get-id'
+returns) point should land on -- the same entry as the row point was on
+in the table, per `shex-manifest-browser--entry-start-position'."
+  (let ((path (expand-file-name shex-manifest-browser--manifest-file
+                                 shex-manifest-browser--manifest-dir))
+        (inhibit-read-only t))
+    (erase-buffer)
+    (insert-file-contents path)
+    (funcall (if (fboundp 'yaml-mode) #'yaml-mode #'fundamental-mode))
+    ;; `buffer-read-only' is `permanent-local' (an Emacs-wide
+    ;; convention, not this mode's own doing), so `tabulated-list-
+    ;; mode's read-only buffer would otherwise stay read-only across
+    ;; the major-mode switch above.
+    (setq buffer-read-only nil)
+    (setq buffer-file-name path)
+    (set-visited-file-modtime)
+    (set-buffer-modified-p nil)
+    (shex-manifest-browser-yaml-view-mode 1)
+    (goto-char (if index (shex-manifest-browser--entry-start-position index) (point-min)))))
+
+(defun shex-manifest-browser--show-table (&optional index)
+  "Switch this buffer back to its `shex-manifest-browser-mode' table
+view, re-reading the manifest from disk (so an edit made in the YAML
+view -- e.g. to a `queryMap''s node/shape reference -- is reflected
+immediately, though its Result column stays blank until the entry is
+re-run) -- the other half of `shex-manifest-browser-toggle-display'.
+If the YAML view has unsaved edits, offers to save (or discard) them
+first, since they'd otherwise be silently lost when the manifest is
+re-read.  INDEX, if non-nil, is which entry (0-indexed) point should
+land on -- the same entry point was in within the YAML text, per
+`shex-manifest-browser--entry-index-at-point'."
+  (when (buffer-modified-p)
+    (if (y-or-n-p "Save changes to the manifest file before switching to table view? ")
+        (save-buffer)
+      (unless (y-or-n-p "Discard unsaved changes? ")
+        (user-error "Not switching to table view"))))
+  (let ((path (expand-file-name shex-manifest-browser--manifest-file
+                                 shex-manifest-browser--manifest-dir)))
+    (setq buffer-file-name nil)
+    (shex-manifest-browser-mode)
+    (shex-manifest-browser--initialize path)
+    (tabulated-list-print)
+    (set-buffer-modified-p nil)
+    (when index (shex-manifest-browser--goto-entry-row index))))
+
+(defun shex-manifest-browser-toggle-display ()
+  "Toggle between this manifest's terse tabulated-list view and its
+raw YAML text -- like `image-toggle-display' toggles an image buffer
+between the rendered image and its underlying bytes.  Either direction
+puts point on the same entry it was on before toggling."
+  (interactive)
+  (if (derived-mode-p 'shex-manifest-browser-mode)
+      (shex-manifest-browser--show-yaml (tabulated-list-get-id))
+    (shex-manifest-browser--show-table (shex-manifest-browser--entry-index-at-point))))
+
 (defvar-keymap shex-manifest-browser-mode-map
   :parent tabulated-list-mode-map
   "RET" #'shex-manifest-browser-run-entry
-  "a" #'shex-manifest-browser-run-all)
+  "a" #'shex-manifest-browser-run-all
+  "C-c C-c" #'shex-manifest-browser-toggle-display)
 
 (define-derived-mode shex-manifest-browser-mode tabulated-list-mode "ShEx-Manifest"
   "Major mode listing a YAML test manifest's entries -- see
 `shex-manifest-browser-open'.  `RET' runs the entry at point;
 `a' (`shex-manifest-browser-run-all') runs every entry; `g'
 \(`revert-buffer', bound by `tabulated-list-mode' already) reparses the
-manifest file, discarding results.
+manifest file, discarding results; `C-c C-c'
+\(`shex-manifest-browser-toggle-display', `image-toggle-display'-style)
+switches to editing the manifest's raw YAML text directly (`C-c C-c'
+there switches back to this table).
 
 Turning this mode on directly (`M-x shex-manifest-browser-mode') in a
 buffer already visiting a manifest file also works -- it loads that
 same file's entries and detaches the buffer from the file (so `C-x
-C-s' can't clobber the manifest with this mode's own rendering; re-run
-`shex-manifest-browser-open' or `find-file' the manifest again to
-resume editing its YAML directly).
+C-s' can't clobber the manifest with this mode's own rendering; use
+`C-c C-c' to resume editing its YAML directly, rather than `find-file'
+or `shex-manifest-browser-open' again).
 
 The `Schema'/`Data' columns are resized to fit whenever a window
 showing this buffer is resized -- see
