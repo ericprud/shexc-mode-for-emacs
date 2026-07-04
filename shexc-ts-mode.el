@@ -2306,6 +2306,14 @@ run M-x shexc-ts-mode-install-grammar")))
   (add-hook 'flymake-diagnostic-functions #'shexc-ts-mode-flymake nil t)
   (flymake-mode 1)
 
+  ;; `flymake-mode' itself binds no keys for these (by design -- see
+  ;; its own docstring); `C-c !' mirrors flycheck's well-known
+  ;; convention so it's at least discoverable without `M-x'.
+  (define-key shexc-ts-mode-map (kbd "C-c ! n") #'flymake-goto-next-error)
+  (define-key shexc-ts-mode-map (kbd "C-c ! p") #'flymake-goto-prev-error)
+  (define-key shexc-ts-mode-map (kbd "C-c ! c") #'flymake-show-diagnostic)
+  (define-key shexc-ts-mode-map (kbd "C-c ! l") #'flymake-show-buffer-diagnostics)
+
   ;; Optional companion feature (in-place ShExC <-> ShExJ/ShExR
   ;; conversion, `C-c C-v'): pulled in here, lazily, on first use of the
   ;; mode -- not via a top-level `require' above, since

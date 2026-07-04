@@ -48,6 +48,7 @@
 (require 'pcase)
 (require 'transient)
 (require 'rdf-core)
+(require 'flymake)
 
 ;; defined by `define-derived-mode' below; forward-declared so the
 ;; feature menu (which closes over it) can refer to it.
@@ -542,6 +543,16 @@ run M-x turtle-ts-mode-install-grammar")))
 
   ;; Magit-style feature menu
   (define-key turtle-ts-mode-map (kbd "C-c C-c") #'turtle-ts-mode-menu)
+
+  ;; `turtle-ts-mode' itself has no `flymake' backend of its own, but a
+  ;; data buffer commonly gets one attached externally (e.g.
+  ;; `shex-validate-link-buffers'); `flymake-mode' binds no keys for
+  ;; navigating its diagnostics (by design -- see its own docstring),
+  ;; so `C-c !' mirrors flycheck's well-known convention here too.
+  (define-key turtle-ts-mode-map (kbd "C-c ! n") #'flymake-goto-next-error)
+  (define-key turtle-ts-mode-map (kbd "C-c ! p") #'flymake-goto-prev-error)
+  (define-key turtle-ts-mode-map (kbd "C-c ! c") #'flymake-show-diagnostic)
+  (define-key turtle-ts-mode-map (kbd "C-c ! l") #'flymake-show-buffer-diagnostics)
 
   ;; indentation
   (setq-local treesit-simple-indent-rules turtle-ts-mode--indent-rules)

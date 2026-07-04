@@ -373,31 +373,118 @@ mismatch."
   "Hash table, entry index -> (PASS . DETAILS), filled in by
 `shex-manifest-browser-run-entry'/`shex-manifest-browser-run-all'.")
 
+;;; Side-by-side display, node/shape highlighting
+
+(defvar shex-manifest-browser--highlight-overlays nil
+  "Overlays `shex-manifest-browser--highlight-quadruples' put in a
+schema/data buffer pair for the entry last run -- cleared and
+recreated on every run, so only one entry's highlights are ever shown
+at a time.")
+
+(defun shex-manifest-browser--clear-highlights ()
+  (mapc #'delete-overlay shex-manifest-browser--highlight-overlays)
+  (setq shex-manifest-browser--highlight-overlays nil))
+
+(defun shex-manifest-browser--schema-shape-iri (schema-buffer shape)
+  "SHAPE (a `shex-validate--check' quadruple's own SHAPE element) as an
+IRI `shex-validate--find-shape-decl' can look up: SCHEMA-BUFFER's own
+`start = @<label>' target when SHAPE is literally \"Start\"
+\(`emacs-rudof''s own spelling for an association resolved via
+`@START', not itself a resolvable IRI -- see this package's own
+`shex-manifest-browser--resolve-querymap' Commentary on why `START'
+never needs resolving before reaching `read-shapemap' itself), SHAPE
+unchanged otherwise (including when SCHEMA-BUFFER's `start' isn't a
+plain shape reference, in which case there's nothing simple to
+highlight and SHAPE is returned as-is, harmlessly not found by
+`shex-validate--find-shape-decl')."
+  (or (and (equal shape "Start")
+           (with-current-buffer schema-buffer
+             (let ((ctx (shexc-shexj--make-ctx)) start-node)
+               (dolist (c (treesit-node-children (treesit-buffer-root-node 'shexc) t))
+                 (pcase (treesit-node-type c)
+                   ("base_decl" (shexc-shexj--apply-base ctx c))
+                   ("prefix_decl" (shexc-shexj--apply-prefix ctx c))
+                   ("start" (setq start-node c))))
+               (when start-node
+                 (let ((compiled (shexc-shexj--compile-shape-expr
+                                   ctx (treesit-node-child-by-field-name start-node "shape_expr"))))
+                   (and (stringp compiled) compiled))))))
+      shape))
+
+(defun shex-manifest-browser--highlight-quadruples (quadruples schema-buffer data-buffer positions)
+  "Highlight every node in QUADRUPLES (`shex-validate--check''s raw
+`(NODE SHAPE STATUS REASON)' list) at its position(s) in DATA-BUFFER
+\(per POSITIONS, see `rdf-turtle-parse-buffer') and its SHAPE's
+declaration in SCHEMA-BUFFER.  A `{FOCUS ...}' pattern association
+that matched several nodes already produced one quadruple per match
+\(see `shex-manifest-browser--resolve-pattern'), so highlighting every
+quadruple highlights all of them, not just one."
+  (dolist (q quadruples)
+    (pcase-let ((`(,node ,shape ,_status ,_reason) q))
+      (dolist (span (gethash node positions))
+        (let ((ov (make-overlay (car span) (cdr span) data-buffer)))
+          (overlay-put ov 'face 'shex-validate-highlight)
+          (push ov shex-manifest-browser--highlight-overlays)))
+      (when-let* ((label-node (shex-validate--find-shape-decl
+                                schema-buffer (shex-manifest-browser--schema-shape-iri schema-buffer shape))))
+        (let ((ov (make-overlay (treesit-node-start label-node) (treesit-node-end label-node) schema-buffer)))
+          (overlay-put ov 'face 'shex-validate-highlight)
+          (push ov shex-manifest-browser--highlight-overlays))))))
+
+(defcustom shex-manifest-browser-window-height 10
+  "Number of lines BROWSER-WINDOW (the manifest table itself) keeps
+across the top when `shex-manifest-browser--show-side-by-side' arranges
+the schema/data windows below it."
+  :type 'natnum
+  :group 'shex-manifest-browser)
+
+(defun shex-manifest-browser--show-side-by-side (browser-window schema-buffer data-buffer)
+  "Arrange BROWSER-WINDOW (this manifest buffer, kept on top, a fixed
+`shex-manifest-browser-window-height' lines tall) with SCHEMA-BUFFER
+and DATA-BUFFER in a row below it, split left/right -- replacing every
+window other than BROWSER-WINDOW (so re-running an entry doesn't pile
+up extra windows from a previous run).
+`shex-validate-show-result-shapemap' (called separately, right after
+this) then places its own results table in a bottom *side* window,
+which spans beneath all of this rather than competing with it for
+space in the same window tree."
+  (dolist (w (window-list))
+    (unless (eq w browser-window) (ignore-errors (delete-window w))))
+  (let* ((middle-window (split-window browser-window shex-manifest-browser-window-height 'below))
+         (data-window (split-window middle-window nil 'right)))
+    (set-window-buffer middle-window schema-buffer)
+    (set-window-buffer data-window data-buffer)))
+
 (defun shex-manifest-browser--run (entry)
   "Load ENTRY's schema/data/queryMap into buffers, resolve its queryMap,
 link the buffers for `shex-validate', and return (PASS . DETAILS) per
 `shex-manifest-browser--pass-p'.  Also shows the schema/data buffers
-and the full per-association result table
-\(`shex-validate-show-result-shapemap')."
-  (let* ((manifest-dir shex-manifest-browser--manifest-dir)
-         (schema-buffer (shex-manifest-browser--schema-buffer entry manifest-dir))
-         (data-buffer (shex-manifest-browser--data-buffer entry manifest-dir))
-         (querymap-text (shex-manifest-browser--querymap-text entry manifest-dir)))
-    (shex-manifest-browser--querymap-buffer entry manifest-dir)
-    (let* ((assocs (shex-manifest-browser--resolve-querymap querymap-text data-buffer))
-           (shapemap-buffer (shex-manifest-browser--content-buffer
-                              'shapemap (shex-manifest-browser--get entry 'dataLabel)
-                              (shex-manifest-browser--shapemap-text assocs) nil)))
-      (with-current-buffer data-buffer
-        (setq-local shex-validate--rudof nil)
-        (setq-local shex-validate--schema-tick nil)
-        (setq-local shex-validate--shapemap-tick nil)
-        (shex-validate-link-buffers schema-buffer shapemap-buffer)
-        (let ((quadruples (shex-validate--check)))
-          (display-buffer schema-buffer)
-          (display-buffer data-buffer)
-          (shex-validate-show-result-shapemap data-buffer)
-          (shex-manifest-browser--pass-p entry assocs quadruples))))))
+side by side with every resulting node/shape association highlighted
+in each (see `shex-manifest-browser--highlight-quadruples'), and the
+full per-association result table (`shex-validate-show-result-shapemap')."
+  (let ((browser-window (selected-window))
+        (manifest-dir shex-manifest-browser--manifest-dir))
+    (let* ((schema-buffer (shex-manifest-browser--schema-buffer entry manifest-dir))
+           (data-buffer (shex-manifest-browser--data-buffer entry manifest-dir))
+           (querymap-text (shex-manifest-browser--querymap-text entry manifest-dir)))
+      (shex-manifest-browser--querymap-buffer entry manifest-dir)
+      (let* ((assocs (shex-manifest-browser--resolve-querymap querymap-text data-buffer))
+             (shapemap-buffer (shex-manifest-browser--content-buffer
+                               'shapemap (shex-manifest-browser--get entry 'dataLabel)
+                               (shex-manifest-browser--shapemap-text assocs) nil)))
+        (with-current-buffer data-buffer
+          (setq-local shex-validate--rudof nil)
+          (setq-local shex-validate--schema-tick nil)
+          (setq-local shex-validate--shapemap-tick nil)
+          (shex-validate-link-buffers schema-buffer shapemap-buffer)
+          (let ((quadruples (shex-validate--check))
+                (positions (make-hash-table :test 'equal)))
+            (rdf-turtle-parse-buffer nil positions)
+            (shex-manifest-browser--clear-highlights)
+            (shex-manifest-browser--highlight-quadruples quadruples schema-buffer data-buffer positions)
+            (shex-manifest-browser--show-side-by-side browser-window schema-buffer data-buffer)
+            (shex-validate-show-result-shapemap data-buffer)
+            (shex-manifest-browser--pass-p entry assocs quadruples)))))))
 
 ;;; The browser buffer
 
@@ -458,6 +545,31 @@ state from the manifest at PATH."
   (setq shex-manifest-browser--entries (shex-manifest-browser--load-manifest path))
   (setq shex-manifest-browser--results (make-hash-table :test 'equal)))
 
+(defun shex-manifest-browser--set-column-widths ()
+  "Recompute `tabulated-list-format' column widths from the selected
+window's current width and redraw: `#'/`Expected' stay fixed (short,
+fixed vocabulary), `Schema'/`Data' split whatever's left evenly, and
+`Result' (width 0) takes whatever remains after that -- so widening or
+narrowing a window showing this buffer keeps `Schema'/`Data' readable
+instead of truncating at a width fixed when the mode turned on.
+Buffer-local on `window-configuration-change-hook', so it re-runs on
+every resize."
+  (when (derived-mode-p 'shex-manifest-browser-mode)
+    (let* ((total (max 60 (window-width)))
+           (fixed-cols 4)                            ; "#"
+           (expected-col 14)                         ; "Expected"
+           (schema-data (max 30 (- total fixed-cols expected-col 10))) ; 10: column gaps
+           (schema (/ schema-data 2))
+           (data (- schema-data schema)))
+      (setq tabulated-list-format
+            (vector (list "#" fixed-cols nil)
+                    (list "Schema" schema t)
+                    (list "Data" data t)
+                    (list "Expected" expected-col t)
+                    (list "Result" 0 t)))
+      (tabulated-list-init-header)
+      (tabulated-list-print t))))
+
 (defvar-keymap shex-manifest-browser-mode-map
   :parent tabulated-list-mode-map
   "RET" #'shex-manifest-browser-run-entry
@@ -475,13 +587,16 @@ buffer already visiting a manifest file also works -- it loads that
 same file's entries and detaches the buffer from the file (so `C-x
 C-s' can't clobber the manifest with this mode's own rendering; re-run
 `shex-manifest-browser-open' or `find-file' the manifest again to
-resume editing its YAML directly)."
-  (setq tabulated-list-format
-        [("#" 4 nil) ("Schema" 30 t) ("Data" 30 t) ("Expected" 14 t) ("Result" 0 t)])
+resume editing its YAML directly).
+
+The `Schema'/`Data' columns are resized to fit whenever a window
+showing this buffer is resized -- see
+`shex-manifest-browser--set-column-widths'."
   (setq tabulated-list-padding 2)
   (setq tabulated-list-entries #'shex-manifest-browser--entries-fn)
   (setq revert-buffer-function #'shex-manifest-browser-revert)
-  (tabulated-list-init-header)
+  (shex-manifest-browser--set-column-widths)
+  (add-hook 'window-configuration-change-hook #'shex-manifest-browser--set-column-widths nil t)
   (when (and (null shex-manifest-browser--entries) buffer-file-name)
     (let ((path buffer-file-name))
       (setq buffer-file-name nil)
