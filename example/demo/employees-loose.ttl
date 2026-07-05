@@ -1,0 +1,8 @@
+BASE <http://example.org/>
+PREFIX co: <http://co.example/ns#>
+PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+
+<#Alice> a foaf:Person ;
+  foaf:givenName <#Alice> ;
+  foaf:familyName "Smith" ;
+  co:idNo 1 .

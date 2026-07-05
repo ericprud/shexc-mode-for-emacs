@@ -2083,6 +2083,19 @@ REPORT-FN is Flymake's callback; see `flymake-diagnostic-functions'."
                    (shexc-ts-mode--flymake-syntax-errors)
                    (shexc-ts-mode--flymake-duplicate-predicates))))
 
+(defun flymake-show-diagnostics-at-point ()
+  "Show, in the echo area, every flymake diagnostic overlapping point
+in the current buffer.  Unlike `flymake-show-diagnostic' (which needs
+to be called from a `*Flymake diagnostics*' list buffer -- it resolves
+POS via `tabulated-list-get-id', not a source-buffer position, so it
+signals \"Nothing at point\" from any ordinary buffer, e.g. `C-c ! c'
+here or in `turtle-ts-mode' before this existed), this works directly
+from the buffer being checked."
+  (interactive)
+  (if-let* ((diags (flymake-diagnostics (point))))
+      (message "%s" (mapconcat #'flymake-diagnostic-text diags "\n"))
+    (message "No flymake diagnostic at point")))
+
 ;;; Feature menu (transient)
 
 (defun shexc-ts-mode--menu-desc (label command &optional width)
@@ -2311,7 +2324,7 @@ run M-x shexc-ts-mode-install-grammar")))
   ;; convention so it's at least discoverable without `M-x'.
   (define-key shexc-ts-mode-map (kbd "C-c ! n") #'flymake-goto-next-error)
   (define-key shexc-ts-mode-map (kbd "C-c ! p") #'flymake-goto-prev-error)
-  (define-key shexc-ts-mode-map (kbd "C-c ! c") #'flymake-show-diagnostic)
+  (define-key shexc-ts-mode-map (kbd "C-c ! c") #'flymake-show-diagnostics-at-point)
   (define-key shexc-ts-mode-map (kbd "C-c ! l") #'flymake-show-buffer-diagnostics)
 
   ;; Optional companion feature (in-place ShExC <-> ShExJ/ShExR

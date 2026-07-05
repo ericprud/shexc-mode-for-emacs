@@ -503,6 +503,22 @@ together."
      (catch-all parent-bol 0)))
   "`treesit-simple-indent-rules' for `turtle-ts-mode'.")
 
+(defun flymake-show-diagnostics-at-point ()
+  "Show, in the echo area, every flymake diagnostic overlapping point
+in the current buffer.  Unlike `flymake-show-diagnostic' (which needs
+to be called from a `*Flymake diagnostics*' list buffer -- it resolves
+POS via `tabulated-list-get-id', not a source-buffer position, so it
+signals \"Nothing at point\" from any ordinary buffer, e.g. `C-c ! c'
+here or in `shexc-ts-mode' before this existed), this works directly
+from the buffer being checked.  Defined identically in `shexc-ts-mode'
+\(`turtle-ts-mode' has no dependency on it, by design -- see the
+Packaging section of the README -- so this can't just call there);
+redefining an identical plain `defun' if both get loaded is harmless."
+  (interactive)
+  (if-let* ((diags (flymake-diagnostics (point))))
+      (message "%s" (mapconcat #'flymake-diagnostic-text diags "\n"))
+    (message "No flymake diagnostic at point")))
+
 ;;; Major mode
 
 ;;;###autoload
@@ -551,7 +567,7 @@ run M-x turtle-ts-mode-install-grammar")))
   ;; so `C-c !' mirrors flycheck's well-known convention here too.
   (define-key turtle-ts-mode-map (kbd "C-c ! n") #'flymake-goto-next-error)
   (define-key turtle-ts-mode-map (kbd "C-c ! p") #'flymake-goto-prev-error)
-  (define-key turtle-ts-mode-map (kbd "C-c ! c") #'flymake-show-diagnostic)
+  (define-key turtle-ts-mode-map (kbd "C-c ! c") #'flymake-show-diagnostics-at-point)
   (define-key turtle-ts-mode-map (kbd "C-c ! l") #'flymake-show-buffer-diagnostics)
 
   ;; indentation

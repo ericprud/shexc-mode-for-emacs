@@ -115,6 +115,47 @@ actually changed.")
   "Like `shex-validate--schema-tick', for
 `shex-validate-shapemap-buffer'.")
 
+;;; Cross-buffer re-check: editing the schema/ShapeMap should refresh
+;;; the data buffer's own diagnostics too
+;;
+;; `flymake-mode's `after-change-functions' member only ever reacts to
+;; edits in the buffer flymake is actually attached to -- so without
+;; this, editing `shex-validate-schema-buffer'/`-shapemap-buffer'
+;; leaves the data buffer's own flymake diagnostics stale (still
+;; reporting whatever was true before the edit) until something
+;; explicitly rechecks the data buffer itself (an edit there, `M-x
+;; flymake-start', or `g' in a `shex-validate-results-mode' buffer).
+;; A schema/ShapeMap buffer can be depended on by more than one data
+;; buffer (e.g. several `shex-manifest-browser' entries sharing a
+;; schema by label), so this is a list, not a single buffer.
+
+(defvar-local shex-validate--dependent-data-buffers nil
+  "Data buffers to re-check (via `flymake-start') whenever the current
+\(schema or ShapeMap) buffer changes -- see
+`shex-validate--register-dependent'/`shex-validate-link-buffers'.")
+
+(declare-function flymake--schedule-timer-maybe "flymake")
+
+(defun shex-validate--notify-dependents (&rest _)
+  "`after-change-functions' member for a schema/ShapeMap buffer:
+reuses flymake's own idle-timer debounce
+\(`flymake--schedule-timer-maybe', keyed off `flymake-no-changes-
+timeout' exactly like a normal edit in the data buffer itself would
+be) to re-check every live, `flymake-mode' data buffer depending on
+this buffer, rather than rechecking on every single keystroke here."
+  (dolist (data-buffer shex-validate--dependent-data-buffers)
+    (when (and (buffer-live-p data-buffer)
+               (buffer-local-value 'flymake-mode data-buffer))
+      (with-current-buffer data-buffer
+        (flymake--schedule-timer-maybe)))))
+
+(defun shex-validate--register-dependent (buffer data-buffer)
+  "Arrange for DATA-BUFFER to be rechecked whenever BUFFER (a schema or
+ShapeMap buffer) changes -- see `shex-validate--notify-dependents'."
+  (with-current-buffer buffer
+    (add-to-list 'shex-validate--dependent-data-buffers data-buffer)
+    (add-hook 'after-change-functions #'shex-validate--notify-dependents nil t)))
+
 ;;; Module loading
 
 (defvar shex-validate--fn-prefix nil
@@ -199,7 +240,65 @@ default when SCHEMA-BUFFER declares no BASE of its own."
           (shexc-shexj--ctx-base (shexc-shexj-buffer-directive-ctx))))
       (shex-validate--buffer-base-iri schema-buffer)))
 
+(defun shex-validate--data-shapemap-base-iri (data-buffer)
+  "The base IRI a ShapeMap's relative node references should resolve
+against, given DATA-BUFFER already loaded via `read-data' with
+`shex-validate--buffer-base-iri' as its own BASE: DATA-BUFFER's own
+final `BASE <...>' directive if it declares one -- since that, not
+its file location, is then what `read-data' actually resolved that
+data's own relative subject/object IRIs against -- or
+`shex-validate--buffer-base-iri' otherwise, matching `read-data''s
+default when DATA-BUFFER declares no BASE of its own.  Mirrors
+`shex-validate--schema-shapemap-base-iri' -- confirmed empirically
+\(a bare relative node reference in the ShapeMap, e.g. `<#Alice>',
+otherwise resolves against `emacs-rudof''s own hidden default
+\(the Emacs process's current directory) instead of matching how
+DATA-BUFFER's own identical `<#Alice>' reference actually resolved
+when `read-data' parsed it, so validation silently can't find that
+node in the data at all)."
+  (or (with-current-buffer data-buffer
+        (ignore-errors
+          (rdf-turtle--ctx-base (rdf-turtle-buffer-directive-ctx))))
+      (shex-validate--buffer-base-iri data-buffer)))
+
 ;;; Running a check
+
+(defvar-local shex-validate-after-check-functions nil
+  "Functions called, with the fresh QUADRUPLES result as their sole
+argument, every time `shex-validate--check' runs in a data buffer --
+not just when `shex-validate-flymake' does, e.g. also when
+`shex-manifest-browser' calls `shex-validate--check' directly.  Lets
+other code refresh some other cached view of a data buffer's status
+\(a results table, node/shape highlights, a summary shown elsewhere\)
+on every recheck, including ones `shex-validate--register-dependent'
+triggers from an edit in the schema/ShapeMap buffer, not only when the
+operator explicitly re-validates.")
+
+(defvar shex-validate--suppress-after-check-hook nil
+  "Let-bind to t around a `shex-validate--check' call known to be
+redundant with one that just ran in the same buffer (e.g.
+`shex-manifest-browser--run' already ran
+`shex-validate-after-check-functions' once, explicitly, right before
+also calling `shex-validate-show-result-shapemap' -- whose own
+`tabulated-list-print' independently re-validates to build its table,
+which would otherwise re-trigger the hook a second time for no
+reason), so it's skipped instead of running twice.  Also suppresses
+`shex-validate-check-error-functions'.")
+
+(defvar-local shex-validate-check-error-functions nil
+  "Functions called, with the error object, whenever `shex-validate--
+check' itself signals an error (schema/data/ShapeMap failed to parse,
+or validation itself errored) -- `shex-validate-after-check-
+functions''s counterpart for the case where there's no QUADRUPLES
+result to pass it (e.g. so `shex-manifest-browser' can still reflect
+\"this entry currently fails\" instead of leaving a stale result
+showing).  The error is always re-signalled afterward -- this and
+`shex-validate-after-check-functions' are mutually exclusive per call,
+never both run.  Does NOT run for the two `user-error's `shex-
+validate--check' itself signals directly (no schema/ShapeMap buffer
+linked at all) -- those mean nothing is set up yet, not that a setup
+that WAS working now has a transient mistake in it, so there's nothing
+for a dependent view to usefully reflect.")
 
 (defun shex-validate--check ()
   "Validate the current (data) buffer against
@@ -212,6 +311,17 @@ buffer is unset/no longer live."
     (user-error "No live schema buffer linked -- see `shex-validate-link-buffers'"))
   (unless (and shex-validate-shapemap-buffer (buffer-live-p shex-validate-shapemap-buffer))
     (user-error "No live ShapeMap buffer linked -- see `shex-validate-link-buffers'"))
+  (condition-case err
+      (shex-validate--check-1)
+    (error
+     (unless shex-validate--suppress-after-check-hook
+       (run-hook-with-args 'shex-validate-check-error-functions err))
+     (signal (car err) (cdr err)))))
+
+(defun shex-validate--check-1 ()
+  "The body of `shex-validate--check' proper, wrapped there in a
+`condition-case' that notifies `shex-validate-check-error-functions'
+before re-signalling."
   (unless shex-validate--rudof
     (setq shex-validate--rudof (funcall (shex-validate--rudof-fn 'new))))
   (let ((schema-tick (buffer-chars-modified-tick shex-validate-schema-buffer))
@@ -237,10 +347,13 @@ buffer is unset/no longer live."
        shex-validate--rudof
        (with-current-buffer shex-validate-shapemap-buffer (buffer-string))
        nil
-       (shex-validate--buffer-base-iri (current-buffer))
+       (shex-validate--data-shapemap-base-iri (current-buffer))
        (shex-validate--schema-shapemap-base-iri shex-validate-schema-buffer))
       (setq shex-validate--shapemap-tick shapemap-tick))
-    (funcall (shex-validate--rudof-fn 'validate-shex) shex-validate--rudof)))
+    (let ((quadruples (funcall (shex-validate--rudof-fn 'validate-shex) shex-validate--rudof)))
+      (unless shex-validate--suppress-after-check-hook
+        (run-hook-with-args 'shex-validate-after-check-functions quadruples))
+      quadruples)))
 
 (defun shex-validate--check-with-positions (data-buffer)
   "Run `shex-validate--check' in DATA-BUFFER and return
@@ -316,6 +429,8 @@ own."
          (read-buffer "ShapeMap buffer: " nil t)))
   (setq shex-validate-schema-buffer (get-buffer schema-buffer))
   (setq shex-validate-shapemap-buffer (get-buffer shapemap-buffer))
+  (shex-validate--register-dependent shex-validate-schema-buffer (current-buffer))
+  (shex-validate--register-dependent shex-validate-shapemap-buffer (current-buffer))
   (add-hook 'flymake-diagnostic-functions #'shex-validate-flymake nil t)
   (flymake-mode 1))
 
@@ -344,29 +459,51 @@ own."
     ("pending" 'shadow)
     (_ 'error))) ; "nonconformant"/"inconsistent"
 
+(defvar shex-validate-results--precomputed nil
+  "If non-nil, a (QUADRUPLES . POSITIONS) cons -- as
+`shex-validate--check-with-positions' returns -- that
+`shex-validate-results--entries' uses directly instead of calling
+`shex-validate--check-with-positions' (hence `shex-validate--check')
+again.  Let-bind this around a `tabulated-list-print' on a results
+buffer when fresh results are already on hand (e.g.
+`shex-manifest-browser''s own `shex-validate-after-check-functions'
+callback), to avoid a redundant revalidation that would also
+re-trigger that same hook.")
+
 (defun shex-validate-results--entries (data-buffer)
   "`tabulated-list-entries' for DATA-BUFFER: validate it and return one
 entry per `rudof-validate-shex' quadruple, ID'd by `(NODE
 . SHAPE)' (a ShapeMap's node/shape associations are themselves a set,
 so this is already unique). Refreshes
 `shex-validate-results--positions' as a side effect, since this
-function is called by `tabulated-list-print' (hence: on every `g')."
-  (let ((checked (shex-validate--check-with-positions data-buffer)))
-    (setq shex-validate-results--positions (cdr checked))
-    (mapcar
-     (lambda (quad)
-       (pcase-let ((`(,node ,shape ,status ,reason) quad))
-         (list (cons node shape)
-               (vector node shape
-                       (propertize status 'face (shex-validate-results--status-face status))
-                       ;; rudof's own `reason' strings routinely carry an
-                       ;; embedded/trailing newline (e.g. "Shape passed
-                       ;; ...\n") -- left alone, `tabulated-list-print'
-                       ;; renders that as a literal line break, silently
-                       ;; splitting one logical row across two buffer
-                       ;; lines and breaking line-based row navigation.
-                       (string-trim (replace-regexp-in-string "\n+" " " reason))))))
-     (car checked))))
+function is called by `tabulated-list-print' (hence: on every `g').
+A transient schema/data/ShapeMap parse failure (`shex-validate--check'
+signalling an error, e.g. mid-edit in the schema buffer) produces one
+synthetic row showing the error, rather than letting `tabulated-list-
+print' itself crash outright with no results shown at all."
+  (let ((checked (or shex-validate-results--precomputed
+                      (condition-case err
+                          (shex-validate--check-with-positions data-buffer)
+                        (error (cons :error (error-message-string err)))))))
+    (if (eq (car-safe checked) :error)
+        (progn
+          (setq shex-validate-results--positions (make-hash-table :test #'equal))
+          (list (list :error (vector "" "" (propertize "ERROR" 'face 'error) (cdr checked)))))
+      (setq shex-validate-results--positions (cdr checked))
+      (mapcar
+       (lambda (quad)
+         (pcase-let ((`(,node ,shape ,status ,reason) quad))
+           (list (cons node shape)
+                 (vector node shape
+                         (propertize status 'face (shex-validate-results--status-face status))
+                         ;; rudof's own `reason' strings routinely carry an
+                         ;; embedded/trailing newline (e.g. "Shape passed
+                         ;; ...\n") -- left alone, `tabulated-list-print'
+                         ;; renders that as a literal line break, silently
+                         ;; splitting one logical row across two buffer
+                         ;; lines and breaking line-based row navigation.
+                         (string-trim (replace-regexp-in-string "\n+" " " reason))))))
+       (car checked)))))
 
 (defun shex-validate-results-goto-node ()
   "Jump to the row at point's node in its data buffer, at the position

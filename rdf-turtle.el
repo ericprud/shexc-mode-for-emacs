@@ -379,6 +379,26 @@ inside a throwaway `with-temp-buffer'."
     (insert-file-contents path)
     (rdf-turtle-parse-buffer store)))
 
+;;;###autoload
+(defun rdf-turtle-buffer-directive-ctx ()
+  "A `rdf-turtle--ctx' reflecting every BASE/PREFIX declaration in the
+current buffer's Turtle text, applied in document order exactly as
+`rdf-turtle-parse-buffer' would -- i.e. the BASE/PREFIX table active by
+the *end* of the buffer.  For callers that need to resolve a raw IRI/
+prefixed-name token the same way `rdf-turtle-parse-buffer' would
+resolve that same buffer's own triples, without parsing the whole
+buffer into a store (e.g. `shex-validate--data-shapemap-base-iri',
+resolving a ShapeMap's relative node references the same way
+`read-data' resolved that data buffer's own relative subject/object
+IRIs -- mirroring `shexc-shexj-buffer-directive-ctx' for schemas)."
+  (let ((ctx (rdf-turtle--ctx-create)))
+    (treesit-parser-create 'turtle)
+    (dolist (statement (rdf-turtle--children-of-types (treesit-buffer-root-node 'turtle) '("statement")))
+      (let ((child (treesit-node-child statement 0 t)))
+        (when (equal (treesit-node-type child) "directive")
+          (rdf-turtle--process-directive ctx child))))
+    ctx))
+
 (provide 'rdf-turtle)
 
 ;;; rdf-turtle.el ends here

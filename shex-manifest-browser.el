@@ -248,13 +248,7 @@ itself doesn't parse this, so it never reaches `read-shapemap')."
 for resolving a `{...}' pattern's raw predicate/object tokens the same
 way."
   (with-current-buffer data-buffer
-    (let ((ctx (rdf-turtle--ctx-create)))
-      (treesit-parser-create 'turtle)
-      (dolist (statement (rdf-turtle--children-of-types (treesit-buffer-root-node 'turtle) '("statement")))
-        (let ((child (treesit-node-child statement 0 t)))
-          (when (equal (treesit-node-type child) "directive")
-            (rdf-turtle--process-directive ctx child))))
-      ctx)))
+    (rdf-turtle-buffer-directive-ctx)))
 
 (defun shex-manifest-browser--resolve-token (token ctx)
   "Resolve one `{...}' triplet-pattern TOKEN: `FOCUS' -> the symbol
@@ -432,25 +426,39 @@ highlight and SHAPE is returned as-is, harmlessly not found by
                    (and (stringp compiled) compiled))))))
       shape))
 
+(defface shex-manifest-browser-nonconformant-highlight
+  '((t :inherit error))
+  "Face `shex-manifest-browser--highlight-quadruples' uses for a node/
+shape whose association is currently nonconformant/inconsistent --
+distinct from `shex-validate-highlight' (a neutral, `highlight'-based
+face, used for conformant/pending ones), so a currently-failing node
+or shape stands out from a merely last-checked one."
+  :group 'shex-manifest-browser)
+
 (defun shex-manifest-browser--highlight-quadruples (quadruples schema-buffer data-buffer positions)
   "Highlight every node in QUADRUPLES (`shex-validate--check''s raw
 `(NODE SHAPE STATUS REASON)' list) at its position(s) in DATA-BUFFER
 \(per POSITIONS, see `rdf-turtle-parse-buffer') and its SHAPE's
-declaration in SCHEMA-BUFFER.  A `{FOCUS ...}' pattern association
-that matched several nodes already produced one quadruple per match
-\(see `shex-manifest-browser--resolve-pattern'), so highlighting every
-quadruple highlights all of them, not just one."
+declaration in SCHEMA-BUFFER, in `shex-manifest-browser-nonconformant-
+highlight' for a currently-failing association or plain
+`shex-validate-highlight' otherwise.  A `{FOCUS ...}' pattern
+association that matched several nodes already produced one quadruple
+per match (see `shex-manifest-browser--resolve-pattern'), so
+highlighting every quadruple highlights all of them, not just one."
   (dolist (q quadruples)
-    (pcase-let ((`(,node ,shape ,_status ,_reason) q))
-      (dolist (span (gethash node positions))
-        (let ((ov (make-overlay (car span) (cdr span) data-buffer)))
-          (overlay-put ov 'face 'shex-validate-highlight)
-          (push ov shex-manifest-browser--highlight-overlays)))
-      (when-let* ((label-node (shex-validate--find-shape-decl
-                                schema-buffer (shex-manifest-browser--schema-shape-iri schema-buffer shape))))
-        (let ((ov (make-overlay (treesit-node-start label-node) (treesit-node-end label-node) schema-buffer)))
-          (overlay-put ov 'face 'shex-validate-highlight)
-          (push ov shex-manifest-browser--highlight-overlays))))))
+    (pcase-let ((`(,node ,shape ,status ,_reason) q))
+      (let ((face (if (member status '("conformant" "pending"))
+                       'shex-validate-highlight
+                     'shex-manifest-browser-nonconformant-highlight)))
+        (dolist (span (gethash node positions))
+          (let ((ov (make-overlay (car span) (cdr span) data-buffer)))
+            (overlay-put ov 'face face)
+            (push ov shex-manifest-browser--highlight-overlays)))
+        (when-let* ((label-node (shex-validate--find-shape-decl
+                                  schema-buffer (shex-manifest-browser--schema-shape-iri schema-buffer shape))))
+          (let ((ov (make-overlay (treesit-node-start label-node) (treesit-node-end label-node) schema-buffer)))
+            (overlay-put ov 'face face)
+            (push ov shex-manifest-browser--highlight-overlays)))))))
 
 (defcustom shex-manifest-browser-window-height 10
   "Number of lines BROWSER-WINDOW (the manifest table itself) keeps
@@ -476,19 +484,162 @@ space in the same window tree."
     (set-window-buffer middle-window schema-buffer)
     (set-window-buffer data-window data-buffer)))
 
-(defun shex-manifest-browser--run (entry)
-  "Load ENTRY's schema/data/queryMap into buffers, resolve its queryMap,
-link the buffers for `shex-validate', and return (PASS . DETAILS) per
+;;; Live refresh: keep the table row, highlights, and results buffer
+;;; current after a schema/data/queryMap edit, not just flymake
+;;
+;; `shex-validate-after-check-functions' (in shex-validate.el) already
+;; fires on every `shex-validate--check', including ones
+;; `shex-validate--register-dependent' triggers automatically from a
+;; schema/ShapeMap edit -- `shex-manifest-browser--on-recheck' below is
+;; what this package adds to that hook, so those same automatic
+;; rechecks also keep everything else current, not just the data
+;; buffer's own flymake diagnostics.
+
+(defvar-local shex-manifest-browser--owner-browser-buffer nil
+  "The `shex-manifest-browser-mode' buffer whose table has this data
+buffer's current entry -- set by `shex-manifest-browser--run', read by
+`shex-manifest-browser--on-recheck'.")
+
+(defvar-local shex-manifest-browser--owner-index nil
+  "Like `shex-manifest-browser--owner-browser-buffer', the entry's own
+index into that buffer's `shex-manifest-browser--entries'.")
+
+(defvar-local shex-manifest-browser--owner-querymap-buffer nil
+  "The buffer holding this data buffer's current entry's raw queryMap
+text (see `shex-manifest-browser--querymap-buffer') -- read fresh on
+every recheck (rather than re-reading the entry's own original YAML
+text) so an edit to the queryMap buffer itself is picked up too.")
+
+(defvar-local shex-manifest-browser--schema-quadruples nil
+  "The most recent `shex-validate--check' quadruples result whose SHAPE
+elements are looked up in this (schema) buffer -- refreshed by
+`shex-manifest-browser--on-recheck'/`--on-recheck-error', read by
+`shex-manifest-browser--schema-flymake' to report a matching
+diagnostic on each currently-nonconformant/inconsistent shape's own
+declaration, mirroring what `shex-validate-flymake' already reports on
+the data buffer's own failing node.")
+
+(defun shex-manifest-browser--schema-flymake (report-fn &rest _args)
+  "A `flymake-diagnostic-functions' backend for a schema buffer
+`shex-manifest-browser--run' set up: reports one `:error' diagnostic
+per currently-nonconformant/inconsistent quadruple in
+`shex-manifest-browser--schema-quadruples', at that quadruple's own
+SHAPE's declaration.  Distinct from `shexc-ts-mode-flymake' (which only
+checks the schema's own internal consistency -- undefined prefixes/
+shapes, duplicate predicates -- nothing about whether currently-linked
+data actually conforms) and only reports something once at least one
+entry has been run (`shex-manifest-browser--run' is what registers
+this backend on a schema buffer in the first place)."
+  (let (diagnostics)
+    (pcase-dolist (`(,node ,shape ,status ,reason) shex-manifest-browser--schema-quadruples)
+      (unless (member status '("conformant" "pending"))
+        (when-let* ((label-node (shex-validate--find-shape-decl
+                                  (current-buffer) (shex-manifest-browser--schema-shape-iri (current-buffer) shape))))
+          (push (flymake-make-diagnostic
+                 (current-buffer) (treesit-node-start label-node) (treesit-node-end label-node) :error
+                 (format "ShEx %s for node %s: %s" status node reason))
+                diagnostics))))
+    (funcall report-fn diagnostics)))
+
+(defun shex-manifest-browser--on-recheck (quadruples)
+  "Added (buffer-local) to `shex-validate-after-check-functions' in
+every data buffer `shex-manifest-browser--run' sets up: refreshes that
+entry's row in `shex-manifest-browser--owner-browser-buffer' (the
+table's Result column), re-highlights nodes/shapes in the schema/data
+buffers (`shex-manifest-browser--highlight-quadruples', distinguishing
+currently-nonconformant ones from conformant), and refreshes any
+already-open `*ShEx Result ShapeMap: ...*' buffer for this data
+buffer -- all from QUADRUPLES directly, never by calling
+`shex-validate--check' again (which would re-trigger this same hook).
+
+Also refreshes `shex-manifest-browser--schema-quadruples' in
+SCHEMA-BUFFER and re-triggers its own flymake (`shex-manifest-browser--
+schema-flymake'), so a nonconformant/inconsistent shape is flagged
+there too -- even though nothing changed in SCHEMA-BUFFER itself
+\(flymake's own automatic re-check triggers only on an edit *in* the
+buffer being checked, which wouldn't fire from a DATA-only edit)."
+  (let* ((data-buffer (current-buffer))
+         (schema-buffer shex-validate-schema-buffer)
+         (browser-buffer shex-manifest-browser--owner-browser-buffer)
+         (index shex-manifest-browser--owner-index)
+         (querymap-buffer shex-manifest-browser--owner-querymap-buffer)
+         (positions (make-hash-table :test 'equal)))
+    (rdf-turtle-parse-buffer nil positions)
+    (shex-manifest-browser--clear-highlights)
+    (when (and schema-buffer (buffer-live-p schema-buffer))
+      (shex-manifest-browser--highlight-quadruples quadruples schema-buffer data-buffer positions)
+      (with-current-buffer schema-buffer
+        (setq-local shex-manifest-browser--schema-quadruples quadruples)
+        (flymake-start)))
+    (when (and browser-buffer (buffer-live-p browser-buffer) index)
+      (with-current-buffer browser-buffer
+        (when (< index (length shex-manifest-browser--entries))
+          (let* ((entry (nth index shex-manifest-browser--entries))
+                 (querymap-text (if (buffer-live-p querymap-buffer)
+                                     (with-current-buffer querymap-buffer (buffer-string))
+                                   (shex-manifest-browser--querymap-text
+                                    entry shex-manifest-browser--manifest-dir)))
+                 (assocs (shex-manifest-browser--resolve-querymap querymap-text data-buffer)))
+            (puthash index (shex-manifest-browser--pass-p entry assocs quadruples)
+                     shex-manifest-browser--results)
+            (tabulated-list-print t)))))
+    (when-let* ((results-buffer (get-buffer (format "*ShEx Result ShapeMap: %s*" (buffer-name data-buffer)))))
+      (let ((shex-validate-results--precomputed (cons quadruples positions)))
+        (with-current-buffer results-buffer (tabulated-list-print t))))))
+
+(defun shex-manifest-browser--on-recheck-error (err)
+  "Added (buffer-local) to `shex-validate-check-error-functions' in
+every data buffer `shex-manifest-browser--run' sets up: marks that
+entry's row in `shex-manifest-browser--owner-browser-buffer' as
+failing, with ERR's own message as the detail, and clears any existing
+node/shape highlights -- a transient schema/data/ShapeMap parse
+failure (e.g. mid-edit in the schema buffer, an undefined prefix)
+means there are no fresh quadruples to highlight or to compute a real
+pass/fail from.  Counterpart to `shex-manifest-browser--on-recheck' for
+exactly the case that can't call it -- see
+`shex-validate-check-error-functions'; the results buffer needs no
+equivalent handling here since `shex-validate-results--entries' already
+degrades to a one-row error display on its own.
+
+Also clears `shex-manifest-browser--schema-quadruples' in the linked
+schema buffer and re-triggers its flymake, so a stale nonconformant-
+shape diagnostic from a previous successful check doesn't linger once
+the schema/data/ShapeMap no longer even parses."
+  (shex-manifest-browser--clear-highlights)
+  (when-let* ((schema-buffer shex-validate-schema-buffer))
+    (when (buffer-live-p schema-buffer)
+      (with-current-buffer schema-buffer
+        (setq-local shex-manifest-browser--schema-quadruples nil)
+        (flymake-start))))
+  (let ((browser-buffer shex-manifest-browser--owner-browser-buffer)
+        (index shex-manifest-browser--owner-index))
+    (when (and browser-buffer (buffer-live-p browser-buffer) index)
+      (with-current-buffer browser-buffer
+        (when (< index (length shex-manifest-browser--entries))
+          (puthash index (cons nil (list (error-message-string err)))
+                   shex-manifest-browser--results)
+          (tabulated-list-print t))))))
+
+(defun shex-manifest-browser--run (entry index)
+  "Load ENTRY's (at INDEX in `shex-manifest-browser--entries') schema/
+data/queryMap into buffers, resolve its queryMap, link the buffers for
+`shex-validate', and return (PASS . DETAILS) per
 `shex-manifest-browser--pass-p'.  Also shows the schema/data buffers
 side by side with every resulting node/shape association highlighted
 in each (see `shex-manifest-browser--highlight-quadruples'), and the
-full per-association result table (`shex-validate-show-result-shapemap')."
-  (let ((browser-window (selected-window))
+full per-association result table (`shex-validate-show-result-shapemap').
+
+Registers `shex-manifest-browser--on-recheck' on the data buffer, so
+editing the schema/data/queryMap afterward keeps this entry's table
+row, highlights, and results buffer current too -- not just its
+flymake diagnostics (see `shex-validate--register-dependent')."
+  (let ((browser-buffer (current-buffer))
+        (browser-window (selected-window))
         (manifest-dir shex-manifest-browser--manifest-dir))
     (let* ((schema-buffer (shex-manifest-browser--schema-buffer entry manifest-dir))
            (data-buffer (shex-manifest-browser--data-buffer entry manifest-dir))
-           (querymap-text (shex-manifest-browser--querymap-text entry manifest-dir)))
-      (shex-manifest-browser--querymap-buffer entry manifest-dir)
+           (querymap-buffer (shex-manifest-browser--querymap-buffer entry manifest-dir))
+           (querymap-text (with-current-buffer querymap-buffer (buffer-string))))
       (let* ((assocs (shex-manifest-browser--resolve-querymap querymap-text data-buffer))
              (shapemap-buffer (shex-manifest-browser--content-buffer
                                'shapemap (shex-manifest-browser--get entry 'dataLabel)
@@ -497,15 +648,19 @@ full per-association result table (`shex-validate-show-result-shapemap')."
           (setq-local shex-validate--rudof nil)
           (setq-local shex-validate--schema-tick nil)
           (setq-local shex-validate--shapemap-tick nil)
+          (setq-local shex-manifest-browser--owner-browser-buffer browser-buffer)
+          (setq-local shex-manifest-browser--owner-index index)
+          (setq-local shex-manifest-browser--owner-querymap-buffer querymap-buffer)
+          (add-hook 'shex-validate-after-check-functions #'shex-manifest-browser--on-recheck nil t)
+          (add-hook 'shex-validate-check-error-functions #'shex-manifest-browser--on-recheck-error nil t)
+          (with-current-buffer schema-buffer
+            (add-hook 'flymake-diagnostic-functions #'shex-manifest-browser--schema-flymake nil t))
           (shex-validate-link-buffers schema-buffer shapemap-buffer)
-          (let ((quadruples (shex-validate--check))
-                (positions (make-hash-table :test 'equal)))
-            (rdf-turtle-parse-buffer nil positions)
-            (shex-manifest-browser--clear-highlights)
-            (shex-manifest-browser--highlight-quadruples quadruples schema-buffer data-buffer positions)
-            (shex-manifest-browser--show-side-by-side browser-window schema-buffer data-buffer)
-            (shex-validate-show-result-shapemap data-buffer)
-            (shex-manifest-browser--pass-p entry assocs quadruples)))))))
+          (shex-validate--check)
+          (shex-manifest-browser--show-side-by-side browser-window schema-buffer data-buffer)
+          (let ((shex-validate--suppress-after-check-hook t))
+            (shex-validate-show-result-shapemap data-buffer)))))
+    (gethash index shex-manifest-browser--results)))
 
 ;;; The browser buffer
 
@@ -532,9 +687,11 @@ full per-association result table (`shex-validate-show-result-shapemap')."
   (let ((index (tabulated-list-get-id)))
     (unless index (user-error "No manifest entry at point"))
     (let* ((entry (nth index shex-manifest-browser--entries))
-           (result (shex-manifest-browser--run entry)))
-      (puthash index result shex-manifest-browser--results)
-      (tabulated-list-print t)
+           ;; `shex-manifest-browser--run' itself already stores the
+           ;; result and redraws the table row, via the same
+           ;; `shex-manifest-browser--on-recheck' callback that keeps
+           ;; it current on later edits too.
+           (result (shex-manifest-browser--run entry index)))
       (message "%s: %s" (if (car result) "PASS" "FAIL")
                (or (shex-manifest-browser--get entry 'dataLabel) (shex-manifest-browser--get entry 'schemaLabel))))))
 
@@ -543,8 +700,7 @@ full per-association result table (`shex-validate-show-result-shapemap')."
   (interactive)
   (cl-loop for entry in shex-manifest-browser--entries
             for index from 0
-            do (puthash index (shex-manifest-browser--run entry) shex-manifest-browser--results))
-  (tabulated-list-print t)
+            do (shex-manifest-browser--run entry index))
   (message "shex-manifest-browser: ran %d entries, %d passed"
            (hash-table-count shex-manifest-browser--results)
            (cl-count-if #'car (hash-table-values shex-manifest-browser--results))))

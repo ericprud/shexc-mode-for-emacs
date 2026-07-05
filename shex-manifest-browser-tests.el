@@ -475,6 +475,61 @@ operator's own `y'/`n' answer would); `y-or-n-p' is stubbed to answer
               (should-not (car (gethash 3 shex-manifest-browser--results))))))
       (write-region original-content nil shex-manifest-browser-test--manifest-path))))
 
+(ert-deftest shex-manifest-browser-test-live-refresh-on-schema-edit ()
+  "Editing the SCHEMA buffer directly -- not the YAML, and without
+re-running the entry -- updates the table's Result column and the
+node/shape highlight faces automatically: exercises
+`shex-manifest-browser--on-recheck' (added to `shex-validate-after-
+check-functions' by `shex-manifest-browser--run' itself, see that
+function's docstring)."
+  (unless (shex-manifest-browser-test--rudof-available-p)
+    (ert-skip "`shex-validate-rudof-module-path' isn't configured/found -- see this file's Commentary"))
+  (save-window-excursion
+    (shex-manifest-browser-test--with-open-manifest buf
+      (with-current-buffer buf
+        ;; Entry 3: "one item, final status" -- conformant against
+        ;; `<Item> { ex:status ["final" "preliminary"] }'.
+        (shex-manifest-browser--goto-entry-row 3)
+        (shex-manifest-browser-run-entry)
+        (should (car (gethash 3 shex-manifest-browser--results)))
+        (let ((schema-buffer (get-buffer "*schema: FOCUS/START queryMap resolution*"))
+              (data-buffer (get-buffer "*data: one item, final status*")))
+          (should schema-buffer)
+          (should data-buffer)
+          ;; Tighten the value set to exclude "final" -- this entry's
+          ;; own data now fails, purely from a schema edit; no edit to
+          ;; DATA and no explicit re-run.
+          (with-current-buffer schema-buffer
+            (goto-char (point-min))
+            (search-forward "[\"final\" \"preliminary\"]")
+            (replace-match "[\"preliminary\"]"))
+          ;; The real idle timer that would normally trigger this
+          ;; recheck never fires in a batch test -- call it directly,
+          ;; matching `shex-validate-test-schema-edit-refreshes-data-
+          ;; diagnostics''s own approach for the same reason.
+          (with-current-buffer data-buffer (shex-validate--check))
+          (should-not (car (gethash 3 shex-manifest-browser--results)))
+          (should (memq 'shex-manifest-browser-nonconformant-highlight
+                        (with-current-buffer data-buffer
+                          (mapcar (lambda (ov) (overlay-get ov 'face))
+                                  (overlays-in (point-min) (point-max))))))
+          (should (memq 'shex-manifest-browser-nonconformant-highlight
+                        (with-current-buffer schema-buffer
+                          (mapcar (lambda (ov) (overlay-get ov 'face))
+                                  (overlays-in (point-min) (point-max))))))
+          ;; The schema's own flymake (`shex-manifest-browser--schema-
+          ;; flymake') should report a real diagnostic on `<Item>''s
+          ;; own declaration too -- not just an overlay highlight --
+          ;; so `flymake-show-diagnostics-at-point'/`flymake-goto-
+          ;; next-error' work there the same way they already do on
+          ;; the data buffer's own failing node.
+          (with-current-buffer schema-buffer
+            (flymake-start)
+            (let ((diags (flymake-diagnostics (point-min) (point-max))))
+              (should (= (length diags) 1))
+              (should (string-match-p "http://a.example/obs1"
+                                      (flymake-diagnostic-text (car diags)))))))))))
+
 (provide 'shex-manifest-browser-tests)
 
 ;;; shex-manifest-browser-tests.el ends here
