@@ -632,14 +632,28 @@ full per-association result table (`shex-validate-show-result-shapemap').
 Registers `shex-manifest-browser--on-recheck' on the data buffer, so
 editing the schema/data/queryMap afterward keeps this entry's table
 row, highlights, and results buffer current too -- not just its
-flymake diagnostics (see `shex-validate--register-dependent')."
+flymake diagnostics (see `shex-validate--register-dependent').
+
+Also, for whichever of schema/data/queryMap ENTRY declares inline
+\(rather than by `schemaURL'/`dataURL'/`queryMapURL' -- already a real
+file-visiting buffer, already saveable the ordinary way\), makes that
+buffer save back into the manifest file itself (see
+`shex-manifest-browser--enable-save-back')."
   (let ((browser-buffer (current-buffer))
         (browser-window (selected-window))
-        (manifest-dir shex-manifest-browser--manifest-dir))
+        (manifest-dir shex-manifest-browser--manifest-dir)
+        (manifest-path (expand-file-name shex-manifest-browser--manifest-file
+                                          shex-manifest-browser--manifest-dir)))
     (let* ((schema-buffer (shex-manifest-browser--schema-buffer entry manifest-dir))
            (data-buffer (shex-manifest-browser--data-buffer entry manifest-dir))
            (querymap-buffer (shex-manifest-browser--querymap-buffer entry manifest-dir))
            (querymap-text (with-current-buffer querymap-buffer (buffer-string))))
+      (unless (shex-manifest-browser--get entry 'schemaURL)
+        (shex-manifest-browser--enable-save-back schema-buffer manifest-path index 'schema))
+      (unless (shex-manifest-browser--get entry 'dataURL)
+        (shex-manifest-browser--enable-save-back data-buffer manifest-path index 'data))
+      (unless (shex-manifest-browser--get entry 'queryMapURL)
+        (shex-manifest-browser--enable-save-back querymap-buffer manifest-path index 'queryMap))
       (let* ((assocs (shex-manifest-browser--resolve-querymap querymap-text data-buffer))
              (shapemap-buffer (shex-manifest-browser--content-buffer
                                'shapemap (shex-manifest-browser--get entry 'dataLabel)
@@ -805,6 +819,137 @@ block)."
       (while (and (re-search-forward "^- " nil t) (<= (match-beginning 0) here))
         (setq index (1+ index)))
       (and (>= index 0) index))))
+
+;;; Saving an ephemeral schema/data/queryMap buffer back into the
+;;; manifest file
+;;
+;; An inline `schema:'/`data:'/`queryMap:' field (as opposed to a
+;; `schemaURL:'/`dataURL:'/`queryMapURL:' reference, which is instead
+;; a real file `find-file-noselect'd -- already saveable the ordinary
+;; way, nothing special needed) has no file of its own for its buffer
+;; to save to. `shex-manifest-browser--enable-save-back' makes such a
+;; buffer behave like a file-visiting one anyway: modified via any
+;; edit (an ordinary Emacs-wide convention, nothing special needed
+;; here), `C-x C-s' writes the field's own block scalar back into the
+;; manifest file (via `write-contents-functions', which pre-empts
+;; `basic-save-buffer''s own "no file, save where?" prompt), and both
+;; `save-some-buffers'/`save-buffers-kill-emacs' and killing the
+;; buffer directly prompt about unsaved changes exactly as they would
+;; for a real file (`buffer-offer-save'/`kill-buffer-query-functions'
+;; respectively -- `buffer-offer-save' alone has no effect on
+;; `kill-buffer', per its own docstring).
+
+(defun shex-manifest-browser--entry-span (index)
+  "(BEG . END) of manifest entry INDEX's own text span in the current
+buffer (a manifest file's raw YAML) -- from its own `- ...' line up to
+\(not including) the next entry's, or `point-max' for the last entry.
+Reuses `shex-manifest-browser--entry-start-position' for both ends."
+  (cons (shex-manifest-browser--entry-start-position index)
+        (condition-case nil
+            (shex-manifest-browser--entry-start-position (1+ index))
+          (error (point-max)))))
+
+(defun shex-manifest-browser--key-block-region (beg end key)
+  "Within BEG..END (an entry's own span, per
+`shex-manifest-browser--entry-span'), the (BODY-BEG BODY-END INDENT)
+of KEY's (a symbol, e.g. `schema') block-scalar body: BODY-BEG/END
+bound the lines strictly more indented than `KEY: |' itself (blank
+lines included, since a YAML block scalar's body can contain them),
+running from right after that line through the last such line before
+one at or below its own indentation, or END; INDENT is that body's own
+established indentation (its first line's, or KEY's own plus 2 if the
+body is empty). nil if KEY isn't declared as a block scalar within
+this span at all (e.g. this entry uses `KEY URL' instead)."
+  (save-excursion
+    (goto-char beg)
+    (when (re-search-forward (format "^\\( *\\)%s: |[+-]?[ \t]*$" (regexp-quote (symbol-name key))) end t)
+      (let ((key-indent (length (match-string 1)))
+            body-indent)
+        (forward-line 1)
+        (let ((body-beg (point)))
+          (when (and (< (point) end) (looking-at "^\\( *\\)[^ \t\n]"))
+            (setq body-indent (length (match-string 1))))
+          (while (and (< (point) end)
+                      (or (looking-at-p "^[ \t]*$")
+                          (and (looking-at "^\\( *\\)")
+                               (> (length (match-string 1)) key-indent))))
+            (forward-line 1))
+          (list body-beg (point) (or body-indent (+ key-indent 2))))))))
+
+(defun shex-manifest-browser--replace-block-scalar (manifest-path index key new-content)
+  "Replace manifest entry INDEX's KEY block-scalar body in the file at
+MANIFEST-PATH with NEW-CONTENT (a buffer's own current text, e.g. via
+`buffer-string'), preserving the rest of the file exactly -- every
+other entry, comment, and this same entry's own other keys. Signals an
+error, rather than silently doing nothing or corrupting the file, if
+INDEX/KEY don't resolve to a block scalar the way
+`shex-manifest-browser--key-block-region' expects (e.g. this entry
+actually uses `KEY URL' instead)."
+  (with-temp-buffer
+    (insert-file-contents manifest-path)
+    (pcase-let* ((`(,entry-beg . ,entry-end) (shex-manifest-browser--entry-span index))
+                 (region (or (shex-manifest-browser--key-block-region entry-beg entry-end key)
+                             (error "shex-manifest-browser: entry %d has no `%s: |' block scalar to write back to"
+                                    index key))))
+      (pcase-let ((`(,body-beg ,body-end ,body-indent) region))
+        (goto-char body-beg)
+        (delete-region body-beg body-end)
+        (let ((indent (make-string body-indent ?\s))
+              ;; A trailing "" from NEW-CONTENT's own final newline
+              ;; shouldn't become an indented blank line of its own.
+              (lines (split-string new-content "\n")))
+          (when (and (cdr lines) (string-empty-p (car (last lines))))
+            (setq lines (butlast lines)))
+          (dolist (line lines)
+            (insert (if (string-empty-p line) "" indent) line "\n")))))
+    (write-region (point-min) (point-max) manifest-path nil 'quiet)))
+
+(defvar-local shex-manifest-browser--save-back nil
+  "(MANIFEST-PATH INDEX KEY) if this buffer's contents should be
+written back into that manifest file entry's own KEY block scalar on
+save -- set by `shex-manifest-browser--enable-save-back'. See
+`shex-manifest-browser--write-contents'.")
+
+(defun shex-manifest-browser--write-contents ()
+  "`write-contents-functions' member for a buffer
+`shex-manifest-browser--enable-save-back' set up: writes this buffer's
+current text back into its manifest entry's own block scalar
+\(`shex-manifest-browser--replace-block-scalar'), instead of
+`basic-save-buffer' trying -- and failing, since these buffers have no
+`buffer-file-name' of their own -- to prompt for a file to write.
+Returns t, telling `basic-save-buffer' the save is already handled."
+  (pcase-let ((`(,manifest-path ,index ,key) shex-manifest-browser--save-back))
+    (shex-manifest-browser--replace-block-scalar manifest-path index key (buffer-string))
+    (set-buffer-modified-p nil)
+    (message "Wrote `%s' back into entry %d of %s" key index (file-name-nondirectory manifest-path)))
+  t)
+
+(defun shex-manifest-browser--kill-buffer-query ()
+  "Buffer-local `kill-buffer-query-functions' member for a buffer
+`shex-manifest-browser--enable-save-back' set up: prompts to save (or
+confirms discarding) unsaved changes before killing, mirroring what
+killing a modified file-visiting buffer already does natively --
+`buffer-offer-save' has no effect on `kill-buffer' itself (per its own
+docstring), and this buffer has no `buffer-file-name' for `kill-buffer'
+to notice on its own."
+  (or (not (buffer-modified-p))
+      (if (y-or-n-p (format "Buffer %s modified; save before killing? " (buffer-name)))
+          (progn (save-buffer) t)
+        (y-or-n-p (format "Buffer %s modified; kill anyway? " (buffer-name))))))
+
+(defun shex-manifest-browser--enable-save-back (buffer manifest-path index key)
+  "Arrange for BUFFER (an ephemeral schema/data/queryMap buffer for
+manifest entry INDEX's inline KEY field) to write its own text back
+into that field's block scalar in the file at MANIFEST-PATH whenever
+it's saved, and to be treated as save-worthy (offered by
+`save-some-buffers'/`save-buffers-kill-emacs', prompted about at
+`kill-buffer' time if modified) despite having no `buffer-file-name'
+of its own."
+  (with-current-buffer buffer
+    (setq-local shex-manifest-browser--save-back (list manifest-path index key))
+    (setq-local buffer-offer-save 'always)
+    (add-hook 'write-contents-functions #'shex-manifest-browser--write-contents nil t)
+    (add-hook 'kill-buffer-query-functions #'shex-manifest-browser--kill-buffer-query nil t)))
 
 (defun shex-manifest-browser--goto-entry-row (index)
   "Move point to the row for manifest entry INDEX (0-indexed) in the

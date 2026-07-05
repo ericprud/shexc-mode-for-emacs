@@ -582,6 +582,18 @@ run M-x turtle-ts-mode-install-grammar")))
 
   (treesit-major-mode-setup))
 
+;; Prefer the tree-sitter mode for .ttl files when its grammar is
+;; available; plain `fundamental-mode' remains the fallback otherwise
+;; (this package has no non-tree-sitter Turtle mode of its own, unlike
+;; `shexc-mode'/`shexc-ts-mode''s pairing). `require' `treesit' first
+;; since this form runs from the autoloads file, before
+;; `treesit-ready-p' would otherwise be defined.
+;;;###autoload
+(progn
+  (require 'treesit)
+  (when (treesit-ready-p 'turtle t)
+    (add-to-list 'auto-mode-alist '("\\.ttl\\'" . turtle-ts-mode))))
+
 (provide 'turtle-ts-mode)
 
 ;;; turtle-ts-mode.el ends here

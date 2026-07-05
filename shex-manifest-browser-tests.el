@@ -403,10 +403,29 @@ the operator already had open untouched."
            (let ((,var (progn (shex-manifest-browser-open shex-manifest-browser-test--manifest-path)
                                (current-buffer))))
              ,@body)
+         ;; A buffer `shex-manifest-browser--enable-save-back' set up
+         ;; (e.g. left modified by a test that edits a schema/data
+         ;; buffer without saving) has its own buffer-local `kill-
+         ;; buffer-query-functions' entry that prompts via `y-or-n-p'
+         ;; -- confirmed empirically that a plain `(let ((kill-buffer-
+         ;; query-functions nil)) ...)' here does NOT suppress it (a
+         ;; buffer-local hook value is looked up in the buffer being
+         ;; killed, not shadowed by a dynamic let established in
+         ;; *this* buffer), so a real `y-or-n-p' prompt fires with no
+         ;; tty to answer it in batch, the kill is treated as
+         ;; declined, and the stale buffer leaks into the next test.
+         ;; Answering "no" to "save before killing" (declining to
+         ;; save -- a test's own transient edit shouldn't get written
+         ;; into the real fixture file as a cleanup side effect) and
+         ;; "yes" to the follow-up "kill anyway" (so the kill isn't
+         ;; itself declined, which would leak the stale buffer into
+         ;; the next test) via one stub, keyed on the prompt text.
          (let ((kill-buffer-query-functions nil))
-           (dolist (buf (buffer-list))
-             (unless (memq buf ,before)
-               (ignore-errors (kill-buffer buf)))))))))
+           (cl-letf (((symbol-function 'y-or-n-p)
+                      (lambda (prompt &rest _) (not (string-search "save before killing" prompt)))))
+             (dolist (buf (buffer-list))
+               (unless (memq buf ,before)
+                 (ignore-errors (kill-buffer buf))))))))))
 
 (ert-deftest shex-manifest-browser-test-open-populates-entries ()
   (shex-manifest-browser-test--with-open-manifest buf
@@ -529,6 +548,56 @@ function's docstring)."
               (should (= (length diags) 1))
               (should (string-match-p "http://a.example/obs1"
                                       (flymake-diagnostic-text (car diags)))))))))))
+
+(ert-deftest shex-manifest-browser-test-save-back-writes-block-scalar ()
+  "Editing an ephemeral (inline, not `schemaURL') schema buffer directly
+and saving it (`save-buffer', not the YAML view) writes the change back
+into the manifest file's own `schema: |' block scalar for that entry,
+leaving the rest of the file untouched -- exercises
+`shex-manifest-browser--enable-save-back'/`--write-contents'/`--replace-
+block-scalar'.  Restores the real fixture file's original content
+afterward, like `-test-edit-round-trip-updates-result' does for the
+same reason."
+  (unless (shex-manifest-browser-test--rudof-available-p)
+    (ert-skip "`shex-validate-rudof-module-path' isn't configured/found -- see this file's Commentary"))
+  (let ((original-content (with-temp-buffer
+                             (insert-file-contents shex-manifest-browser-test--manifest-path)
+                             (buffer-string))))
+    (unwind-protect
+        (save-window-excursion
+          (shex-manifest-browser-test--with-open-manifest buf
+            (with-current-buffer buf
+              ;; Entry 3: "one item, final status" -- inline `schema:'.
+              (shex-manifest-browser--goto-entry-row 3)
+              (shex-manifest-browser-run-entry)
+              (let ((schema-buffer (get-buffer "*schema: FOCUS/START queryMap resolution*")))
+                (should schema-buffer)
+                (with-current-buffer schema-buffer
+                  (should (eq buffer-offer-save 'always))
+                  (goto-char (point-min))
+                  (search-forward "[\"final\" \"preliminary\"]")
+                  (replace-match "[\"preliminary\"]")
+                  (should (buffer-modified-p))
+                  (save-buffer)
+                  (should-not (buffer-modified-p)))))))
+      (let* ((original-entries (yaml-parse-string original-content :object-type 'alist :sequence-type 'list))
+             (reloaded (shex-manifest-browser--load-manifest shex-manifest-browser-test--manifest-path))
+             (entry (nth 3 reloaded)))
+        (should (equal (shex-manifest-browser--get entry 'schema)
+                       "BASE <http://a.example/>
+PREFIX ex: <http://a.example/ns#>
+
+start = @<Item>
+
+<Item> { ex:status [\"preliminary\"] }
+"))
+        ;; Every other entry -- including the immediate neighbors --
+        ;; came back exactly as loaded before this test touched
+        ;; anything.
+        (dotimes (i (length reloaded))
+          (unless (= i 3)
+            (should (equal (nth i reloaded) (nth i original-entries)))))
+        (write-region original-content nil shex-manifest-browser-test--manifest-path)))))
 
 (provide 'shex-manifest-browser-tests)
 
