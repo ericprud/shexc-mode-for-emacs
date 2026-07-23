@@ -699,32 +699,36 @@ buffer save back into the manifest file itself (see
 ;; the table view).
 
 (defconst shex-manifest-browser--column-titles
-  '((index . "#") (data . "Data") (schema . "Schema")
+  '((index . "#") (data . "Data") (schema . "Schema") (queryMap . "QueryMap")
     (expected . "Expected") (result . "Result"))
   "Display title for each key `shex-manifest-browser-columns' and
 `shex-manifest-browser-hidden-columns' can name.")
 
 (defcustom shex-manifest-browser-columns
-  '(index data schema expected result)
+  '(index data schema queryMap expected result)
   "Which columns `shex-manifest-browser-mode' shows, and their
 relative left-to-right order -- a permutation of `index' (\"#\"),
-`data', `schema', `expected', and `result'.  Visibility is a separate
-concern, see `shex-manifest-browser-hidden-columns': hiding a column
-doesn't remove it from here, so it reappears in its old spot if shown
-again later.  Normally set via the live menu,
+`data', `schema', `queryMap', `expected', and `result'.  Visibility is
+a separate concern, see `shex-manifest-browser-hidden-columns': hiding
+a column doesn't remove it from here, so it reappears in its old spot
+if shown again later.  Normally set via the live menu,
 `shex-manifest-browser-columns-menu' (\"m\" in the table view) --
 opinions differ on the \"right\" order (e.g. `Data' vs. `Schema'
 first), so this is left to taste rather than fixed."
   :type '(repeat (choice (const :tag "#" index) (const :tag "Data" data)
-                          (const :tag "Schema" schema) (const :tag "Expected" expected)
-                          (const :tag "Result" result)))
+                          (const :tag "Schema" schema) (const :tag "QueryMap" queryMap)
+                          (const :tag "Expected" expected) (const :tag "Result" result)))
   :group 'shex-manifest-browser)
 
-(defcustom shex-manifest-browser-hidden-columns nil
+(defcustom shex-manifest-browser-hidden-columns '(queryMap)
   "Subset of `shex-manifest-browser-columns' currently hidden from the
-manifest table.  See `shex-manifest-browser-columns-menu'."
+manifest table.  `queryMap' starts out hidden -- its own resolved
+ShapeMap text (as opposed to `Data'/`Schema', which just show
+`dataLabel'/`schemaLabel') isn't usually needed for a glance at the
+table, but it's one `shex-manifest-browser-columns-menu' toggle away.
+See that menu."
   :type '(repeat (choice (const index) (const data) (const schema)
-                          (const expected) (const result)))
+                          (const queryMap) (const expected) (const result)))
   :group 'shex-manifest-browser)
 
 (defun shex-manifest-browser--column-title (column)
@@ -741,12 +745,30 @@ directly to something that would)."
   (or (seq-difference shex-manifest-browser-columns shex-manifest-browser-hidden-columns)
       shex-manifest-browser-columns))
 
+(defun shex-manifest-browser--querymap-column-value (entry)
+  "Single-line display value for ENTRY's QueryMap column cell: its own
+`queryMapURL' path if referenced that way (not resolved/read --
+unlike `dataLabel'/`schemaLabel', `queryMap' has no separate label
+field of its own, and resolving a `{FOCUS ...}'/`{... FOCUS}' pattern
+or reading a referenced file on every table redraw is too expensive
+for a column value), otherwise its inline `queryMap' text with any
+embedded newlines (a multi-association queryMap has one per line,
+same as the trailing newline ShapeMap-compact-syntax puts after every
+single association) collapsed to `\"; \"' so it can't break the
+table's one-line-per-row layout.  Trimmed first, so the common single-
+association case's own trailing newline doesn't turn into a dangling
+`\"; \"' once collapsed."
+  (or (shex-manifest-browser--get entry 'queryMapURL)
+      (replace-regexp-in-string
+       "\n+" "; " (string-trim (or (shex-manifest-browser--get entry 'queryMap) "")))))
+
 (defun shex-manifest-browser--row (index entry)
   (let* ((result (gethash index shex-manifest-browser--results))
          (values
           `((index . ,(number-to-string (1+ index)))
             (data . ,(or (shex-manifest-browser--get entry 'dataLabel) ""))
             (schema . ,(or (shex-manifest-browser--get entry 'schemaLabel) ""))
+            (queryMap . ,(shex-manifest-browser--querymap-column-value entry))
             (expected . ,(or (shex-manifest-browser--get entry 'status) ""))
             (result . ,(cond
                         ((null result) "")
@@ -870,6 +892,10 @@ table isn't useful."
   "Show/hide the Schema column -- see `shex-manifest-browser-columns-menu'."
   (interactive)
   (shex-manifest-browser--toggle-column 'schema))
+(defun shex-manifest-browser-toggle-column-querymap ()
+  "Show/hide the QueryMap column -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--toggle-column 'queryMap))
 (defun shex-manifest-browser-toggle-column-expected ()
   "Show/hide the Expected column -- see `shex-manifest-browser-columns-menu'."
   (interactive)
@@ -919,6 +945,10 @@ remain)."
   "Swap the 4th/5th visible columns -- see `shex-manifest-browser-columns-menu'."
   (interactive)
   (shex-manifest-browser--swap-adjacent-columns 3))
+(defun shex-manifest-browser-swap-columns-5-6 ()
+  "Swap the 5th/6th visible columns -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--swap-adjacent-columns 4))
 
 (defun shex-manifest-browser--swap-description (slot)
   "Label for the SLOT-th `shex-manifest-browser-columns-menu' swap
@@ -959,6 +989,10 @@ this menu between selections; \"q\" exits."
      :transient t
      :description (lambda () (format "[%s] Schema"
                                       (if (memq 'schema shex-manifest-browser-hidden-columns) " " "X"))))
+    ("Q" shex-manifest-browser-toggle-column-querymap
+     :transient t
+     :description (lambda () (format "[%s] QueryMap"
+                                      (if (memq 'queryMap shex-manifest-browser-hidden-columns) " " "X"))))
     ("e" shex-manifest-browser-toggle-column-expected
      :transient t
      :description (lambda () (format "[%s] Expected"
@@ -975,7 +1009,9 @@ this menu between selections; \"q\" exits."
     ("3" shex-manifest-browser-swap-columns-3-4
      :transient t :description (lambda () (shex-manifest-browser--swap-description 2)))
     ("4" shex-manifest-browser-swap-columns-4-5
-     :transient t :description (lambda () (shex-manifest-browser--swap-description 3)))]
+     :transient t :description (lambda () (shex-manifest-browser--swap-description 3)))
+    ("5" shex-manifest-browser-swap-columns-5-6
+     :transient t :description (lambda () (shex-manifest-browser--swap-description 4)))]
    [("q" "Done" transient-quit-all)]])
 
 ;;; Toggling table <-> raw YAML display, `image-toggle-display'-style
@@ -1069,6 +1105,7 @@ Reuses `shex-manifest-browser--entry-start-position' for both ends."
 (defconst shex-manifest-browser--column-yaml-keys
   '((data . (dataLabel data dataURL))
     (schema . (schemaLabel schema schemaURL))
+    (queryMap . (queryMap queryMapURL))
     (expected . (status)))
   "For `shex-manifest-browser-toggle-display': which YAML keys (in
 priority order -- the first one this entry actually declares wins)
