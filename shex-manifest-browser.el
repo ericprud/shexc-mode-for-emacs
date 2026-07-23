@@ -345,21 +345,60 @@ itself doesn't parse that marker, see this file's Commentary."
 
 ;;; Running an entry
 
-(defun shex-manifest-browser--pass-p (entry assocs quadruples)
+(defun shex-manifest-browser--resolve-shape-text (schema-buffer shape-text)
+  "SHAPE-TEXT (an association's own raw shape reference -- `<iri>' or
+`START'/`Start', the only forms this package's own manifests ever put
+in queryMap's shape position) resolved to the same fully-resolved
+absolute-IRI form (or the literal string \"Start\") a
+`shex-validate--check' quadruple reports its own SHAPE element in, per
+SCHEMA-BUFFER's BASE -- so `shex-manifest-browser--pass-p' can match a
+quadruple by (NODE . SHAPE), not NODE alone: a node tested against
+several shapes (e.g. one entry's schema chaining through EXTENDS,
+where `rudof-validate-shex' reports one quadruple per shape actually
+evaluated) would otherwise risk a *different* shape's status getting
+attributed to the association actually being checked.  Returns
+SHAPE-TEXT itself, unresolved, for any other form (e.g.
+`prefix:local' -- unused by this package's own manifests today, but
+nothing stops a future one) or when SCHEMA-BUFFER isn't live; a
+caller comparing the result against SHAPE-TEXT itself can tell
+resolution didn't happen and fall back accordingly."
+  (cond
+   ((member shape-text '("START" "Start")) "Start")
+   ((and schema-buffer (buffer-live-p schema-buffer)
+         (string-prefix-p "<" shape-text) (string-suffix-p ">" shape-text))
+    (with-current-buffer schema-buffer
+      (shexc-shexj--resolve-iri (shexc-shexj-buffer-directive-ctx)
+                                 (substring shape-text 1 (1- (length shape-text))))))
+   (t shape-text)))
+
+(defun shex-manifest-browser--pass-p (entry assocs quadruples schema-buffer)
   "Non-nil if every association in ASSOCS got the status its (possibly
 `!'-negated) expectation calls for, per QUADRUPLES (`shex-validate--check''s
 raw `(NODE SHAPE STATUS REASON)' list) -- a negated association expects
 \"nonconformant\" regardless of ENTRY's own `status'; every other
 association expects ENTRY's `status' itself.  Returns (PASS . DETAILS),
 DETAILS a list of \"NODE@SHAPE: expected E, got A\" strings for any
-mismatch."
+mismatch.
+
+Matches each association's quadruple by (NODE . SHAPE) -- resolving
+the association's own SHAPE-TEXT via SCHEMA-BUFFER
+\(`shex-manifest-browser--resolve-shape-text') to compare against
+QUADRUPLES' already-fully-resolved SHAPE, since NODE alone isn't
+always unique there (see that function).  Falls back to NODE alone
+when SHAPE-TEXT couldn't be resolved to something comparable -- no
+worse than matching by NODE alone unconditionally, which is what this
+function did before it considered SHAPE at all."
   (let ((entry-status (shex-manifest-browser--get entry 'status))
         details)
     (dolist (a assocs)
       (let* ((expected (if (shex-manifest-browser--assoc-negated a) "nonconformant" entry-status))
-             (quad (seq-find (lambda (q) (equal (nth 0 q) (shex-manifest-browser--strip-angle-brackets
-                                                            (shex-manifest-browser--assoc-node-text a))))
-                              quadruples))
+             (node (shex-manifest-browser--strip-angle-brackets (shex-manifest-browser--assoc-node-text a)))
+             (shape-text (shex-manifest-browser--assoc-shape-text a))
+             (resolved-shape (shex-manifest-browser--resolve-shape-text schema-buffer shape-text))
+             (quad (or (seq-find (lambda (q) (and (equal (nth 0 q) node) (equal (nth 1 q) resolved-shape)))
+                                  quadruples)
+                       (and (equal resolved-shape shape-text) ; resolution didn't happen -- fall back
+                            (seq-find (lambda (q) (equal (nth 0 q) node)) quadruples))))
              (actual (and quad (nth 2 quad))))
         (unless (equal actual expected)
           (push (format "%s@%s: expected %s, got %s"
@@ -595,7 +634,7 @@ buffer being checked, which wouldn't fire from a DATA-only edit)."
                                    (shex-manifest-browser--querymap-text
                                     entry shex-manifest-browser--manifest-dir)))
                  (assocs (shex-manifest-browser--resolve-querymap querymap-text data-buffer)))
-            (puthash index (shex-manifest-browser--pass-p entry assocs quadruples)
+            (puthash index (shex-manifest-browser--pass-p entry assocs quadruples schema-buffer)
                      shex-manifest-browser--results)
             (tabulated-list-print t)))))
     (when-let* ((results-buffer (get-buffer (format "*ShEx Result ShapeMap: %s*" (buffer-name data-buffer)))))
