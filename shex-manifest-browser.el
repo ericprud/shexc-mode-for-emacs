@@ -64,6 +64,7 @@
 (require 'rdf-store)
 (require 'rdf-model)
 (require 'tabulated-list)
+(require 'transient)
 (require 'shexc-ts-mode)
 (require 'turtle-ts-mode)
 (require 'yaml-mode nil t)
@@ -691,18 +692,69 @@ buffer save back into the manifest file itself (see
     (gethash index shex-manifest-browser--results)))
 
 ;;; The browser buffer
+;;
+;; Which columns are shown, and in what order -- customizable via
+;; `shex-manifest-browser-columns'/`-hidden-columns' directly, or
+;; (preferably) the live `shex-manifest-browser-columns-menu' ("m" in
+;; the table view).
+
+(defconst shex-manifest-browser--column-titles
+  '((index . "#") (data . "Data") (schema . "Schema")
+    (expected . "Expected") (result . "Result"))
+  "Display title for each key `shex-manifest-browser-columns' and
+`shex-manifest-browser-hidden-columns' can name.")
+
+(defcustom shex-manifest-browser-columns
+  '(index data schema expected result)
+  "Which columns `shex-manifest-browser-mode' shows, and their
+relative left-to-right order -- a permutation of `index' (\"#\"),
+`data', `schema', `expected', and `result'.  Visibility is a separate
+concern, see `shex-manifest-browser-hidden-columns': hiding a column
+doesn't remove it from here, so it reappears in its old spot if shown
+again later.  Normally set via the live menu,
+`shex-manifest-browser-columns-menu' (\"m\" in the table view) --
+opinions differ on the \"right\" order (e.g. `Data' vs. `Schema'
+first), so this is left to taste rather than fixed."
+  :type '(repeat (choice (const :tag "#" index) (const :tag "Data" data)
+                          (const :tag "Schema" schema) (const :tag "Expected" expected)
+                          (const :tag "Result" result)))
+  :group 'shex-manifest-browser)
+
+(defcustom shex-manifest-browser-hidden-columns nil
+  "Subset of `shex-manifest-browser-columns' currently hidden from the
+manifest table.  See `shex-manifest-browser-columns-menu'."
+  :type '(repeat (choice (const index) (const data) (const schema)
+                          (const expected) (const result)))
+  :group 'shex-manifest-browser)
+
+(defun shex-manifest-browser--column-title (column)
+  (alist-get column shex-manifest-browser--column-titles))
+
+(defun shex-manifest-browser--visible-columns ()
+  "`shex-manifest-browser-columns' minus `shex-manifest-browser-
+hidden-columns', in order -- never empty: falls back to the full
+column list if that would hide every column (shouldn't normally
+happen, since `shex-manifest-browser--toggle-column' itself refuses
+to hide the last visible one, but this guards against
+`shex-manifest-browser-hidden-columns' being `setq''d or customized
+directly to something that would)."
+  (or (seq-difference shex-manifest-browser-columns shex-manifest-browser-hidden-columns)
+      shex-manifest-browser-columns))
 
 (defun shex-manifest-browser--row (index entry)
-  (let ((result (gethash index shex-manifest-browser--results)))
+  (let* ((result (gethash index shex-manifest-browser--results))
+         (values
+          `((index . ,(number-to-string (1+ index)))
+            (data . ,(or (shex-manifest-browser--get entry 'dataLabel) ""))
+            (schema . ,(or (shex-manifest-browser--get entry 'schemaLabel) ""))
+            (expected . ,(or (shex-manifest-browser--get entry 'status) ""))
+            (result . ,(cond
+                        ((null result) "")
+                        ((car result) (propertize "PASS" 'face 'success))
+                        (t (propertize (concat "FAIL: " (mapconcat #'identity (cdr result) "; ")) 'face 'error)))))))
     (list index
-          (vector (number-to-string (1+ index))
-                  (or (shex-manifest-browser--get entry 'dataLabel) "")
-                  (or (shex-manifest-browser--get entry 'schemaLabel) "")
-                  (or (shex-manifest-browser--get entry 'status) "")
-                  (cond
-                   ((null result) "")
-                   ((car result) (propertize "PASS" 'face 'success))
-                   (t (propertize (concat "FAIL: " (mapconcat #'identity (cdr result) "; ")) 'face 'error)))))))
+          (vconcat (mapcar (lambda (c) (alist-get c values))
+                            (shex-manifest-browser--visible-columns))))))
 
 (defun shex-manifest-browser--entries-fn ()
   (cl-loop for entry in shex-manifest-browser--entries
@@ -751,29 +803,180 @@ state from the manifest at PATH."
   (setq shex-manifest-browser--results (make-hash-table :test 'equal)))
 
 (defun shex-manifest-browser--set-column-widths ()
-  "Recompute `tabulated-list-format' column widths from the selected
-window's current width and redraw: `#'/`Expected' stay fixed (short,
-fixed vocabulary), `Data'/`Schema' split whatever's left evenly, and
-`Result' (width 0) takes whatever remains after that -- so widening or
-narrowing a window showing this buffer keeps `Schema'/`Data' readable
-instead of truncating at a width fixed when the mode turned on.
-Buffer-local on `window-configuration-change-hook', so it re-runs on
-every resize."
+  "Recompute `tabulated-list-format' from `shex-manifest-browser-
+columns'/`-hidden-columns' and the selected window's current width,
+then redraw: `index'/`expected' stay fixed (short, fixed vocabulary),
+every other non-last column splits whatever's left evenly, and
+whichever column ends up last (usually `result', but any column can
+land there via `shex-manifest-browser-columns-menu') takes the rest
+of the line regardless of its own declared width --
+`tabulated-list-print-col' never truncates the last column, which is
+also why this function doesn't need to hardcode which column is \"the
+wide one.\"  Widening or narrowing a window showing this buffer keeps
+the flexible columns readable instead of truncating at a width fixed
+when the mode turned on.  Buffer-local on `window-configuration-
+change-hook', so it re-runs on every resize."
   (when (derived-mode-p 'shex-manifest-browser-mode)
     (let* ((total (max 60 (window-width)))
-           (fixed-cols 4)                            ; "#"
-           (expected-col 14)                         ; "Expected"
-           (schema-data (max 30 (- total fixed-cols expected-col 10))) ; 10: column gaps
-           (schema (/ schema-data 2))
-           (data (- schema-data schema)))
+           (cols (shex-manifest-browser--visible-columns))
+           (last-col (car (last cols)))
+           (fixed-width (lambda (c) (pcase c ('index 4) ('expected 14))))
+           (fixed-total (apply #'+ (delq nil (mapcar (lambda (c)
+                                                         (unless (eq c last-col)
+                                                           (funcall fixed-width c)))
+                                                       cols))))
+           (flexible (seq-filter (lambda (c) (and (not (eq c last-col))
+                                                    (not (funcall fixed-width c))))
+                                  cols))
+           (flex-total (max 30 (- total fixed-total (* 2 (length cols))))) ; gaps
+           (flex-each (if flexible (/ flex-total (length flexible)) 0)))
       (setq tabulated-list-format
-            (vector (list "#" fixed-cols nil)
-                    (list "Data" data t)
-                    (list "Schema" schema t)
-                    (list "Expected" expected-col t)
-                    (list "Result" 0 t)))
+            (vconcat
+             (mapcar (lambda (c)
+                       (list (shex-manifest-browser--column-title c)
+                             (cond ((eq c last-col) 0)
+                                   ((funcall fixed-width c))
+                                   (t flex-each))
+                             (not (eq c 'index))))
+                     cols)))
       (tabulated-list-init-header)
       (tabulated-list-print t))))
+
+;;; Columns menu: which columns are shown, and in what order
+
+(defun shex-manifest-browser--toggle-column (column)
+  "Show/hide COLUMN in the manifest table, refreshing the display.
+Refuses (with a message, not an error, so it works as a `:transient
+t' `shex-manifest-browser-columns-menu' suffix without kicking the
+user out of the menu) to hide the last visible column -- an empty
+table isn't useful."
+  (if (memq column shex-manifest-browser-hidden-columns)
+      (setq shex-manifest-browser-hidden-columns
+            (delq column shex-manifest-browser-hidden-columns))
+    (if (= 1 (length (shex-manifest-browser--visible-columns)))
+        (message "Can't hide the last visible column")
+      (push column shex-manifest-browser-hidden-columns)))
+  (shex-manifest-browser--set-column-widths))
+
+(defun shex-manifest-browser-toggle-column-index ()
+  "Show/hide the `#' column -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--toggle-column 'index))
+(defun shex-manifest-browser-toggle-column-data ()
+  "Show/hide the Data column -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--toggle-column 'data))
+(defun shex-manifest-browser-toggle-column-schema ()
+  "Show/hide the Schema column -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--toggle-column 'schema))
+(defun shex-manifest-browser-toggle-column-expected ()
+  "Show/hide the Expected column -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--toggle-column 'expected))
+(defun shex-manifest-browser-toggle-column-result ()
+  "Show/hide the Result column -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--toggle-column 'result))
+
+(defun shex-manifest-browser--swap-adjacent-columns (slot)
+  "Swap the SLOT-th and (1+ SLOT)-th currently *visible* columns
+\(0-indexed), by exchanging their positions within the master
+`shex-manifest-browser-columns' order -- any hidden columns
+interleaved between them there stay put, so toggling one back on
+later still lands where it last was.  Any full reordering is reachable
+this way, one adjacent swap at a time (the standard bubble-sort
+argument), so `shex-manifest-browser-columns-menu' only needs one
+swap suffix per adjacent pair rather than a control for every
+possible permutation.  Silently does nothing if SLOT is out of range
+for how many columns are currently visible (e.g. the 4th swap slot,
+between visible columns 4 and 5, when a column is hidden and only 4
+remain)."
+  (let* ((visible (shex-manifest-browser--visible-columns))
+         (a (nth slot visible))
+         (b (nth (1+ slot) visible)))
+    (when (and a b)
+      (let ((cols (vconcat shex-manifest-browser-columns))
+            (pos-a (seq-position shex-manifest-browser-columns a))
+            (pos-b (seq-position shex-manifest-browser-columns b)))
+        (cl-rotatef (aref cols pos-a) (aref cols pos-b))
+        (setq shex-manifest-browser-columns (append cols nil)))))
+  (shex-manifest-browser--set-column-widths))
+
+(defun shex-manifest-browser-swap-columns-1-2 ()
+  "Swap the 1st/2nd visible columns -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--swap-adjacent-columns 0))
+(defun shex-manifest-browser-swap-columns-2-3 ()
+  "Swap the 2nd/3rd visible columns -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--swap-adjacent-columns 1))
+(defun shex-manifest-browser-swap-columns-3-4 ()
+  "Swap the 3rd/4th visible columns -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--swap-adjacent-columns 2))
+(defun shex-manifest-browser-swap-columns-4-5 ()
+  "Swap the 4th/5th visible columns -- see `shex-manifest-browser-columns-menu'."
+  (interactive)
+  (shex-manifest-browser--swap-adjacent-columns 3))
+
+(defun shex-manifest-browser--swap-description (slot)
+  "Label for the SLOT-th `shex-manifest-browser-columns-menu' swap
+suffix: the two currently-adjacent visible column titles it would
+exchange, or a note that this slot doesn't currently exist (fewer
+than SLOT+2 columns visible)."
+  (let* ((visible (shex-manifest-browser--visible-columns))
+         (a (nth slot visible))
+         (b (nth (1+ slot) visible)))
+    (if (and a b)
+        (format "%s <-> %s" (shex-manifest-browser--column-title a)
+                (shex-manifest-browser--column-title b))
+      "(n/a)")))
+
+(transient-define-prefix shex-manifest-browser-columns-menu ()
+  "Persistent submenu for customizing `shex-manifest-browser-mode's
+table columns -- which are shown (`shex-manifest-browser-hidden-
+columns') and their left-to-right order (`shex-manifest-browser-
+columns').  Every suffix is `:transient t' (same convention as
+`shexc-ts-mode-highlight-menu'): flip several settings in a row and
+watch the table redraw live after each one, rather than reopening
+this menu between selections; \"q\" exits."
+  [:description
+   (lambda ()
+     (format "Columns, left to right: %s"
+             (mapconcat #'shex-manifest-browser--column-title
+                         (shex-manifest-browser--visible-columns) " | ")))
+   ["Show/hide"
+    ("i" shex-manifest-browser-toggle-column-index
+     :transient t
+     :description (lambda () (format "[%s] #"
+                                      (if (memq 'index shex-manifest-browser-hidden-columns) " " "X"))))
+    ("d" shex-manifest-browser-toggle-column-data
+     :transient t
+     :description (lambda () (format "[%s] Data"
+                                      (if (memq 'data shex-manifest-browser-hidden-columns) " " "X"))))
+    ("s" shex-manifest-browser-toggle-column-schema
+     :transient t
+     :description (lambda () (format "[%s] Schema"
+                                      (if (memq 'schema shex-manifest-browser-hidden-columns) " " "X"))))
+    ("e" shex-manifest-browser-toggle-column-expected
+     :transient t
+     :description (lambda () (format "[%s] Expected"
+                                      (if (memq 'expected shex-manifest-browser-hidden-columns) " " "X"))))
+    ("r" shex-manifest-browser-toggle-column-result
+     :transient t
+     :description (lambda () (format "[%s] Result"
+                                      (if (memq 'result shex-manifest-browser-hidden-columns) " " "X"))))]
+   ["Reorder (swap adjacent visible columns)"
+    ("1" shex-manifest-browser-swap-columns-1-2
+     :transient t :description (lambda () (shex-manifest-browser--swap-description 0)))
+    ("2" shex-manifest-browser-swap-columns-2-3
+     :transient t :description (lambda () (shex-manifest-browser--swap-description 1)))
+    ("3" shex-manifest-browser-swap-columns-3-4
+     :transient t :description (lambda () (shex-manifest-browser--swap-description 2)))
+    ("4" shex-manifest-browser-swap-columns-4-5
+     :transient t :description (lambda () (shex-manifest-browser--swap-description 3)))]
+   [("q" "Done" transient-quit-all)]])
 
 ;;; Toggling table <-> raw YAML display, `image-toggle-display'-style
 ;;
@@ -1057,6 +1260,7 @@ puts point on the same entry it was on before toggling."
   :parent tabulated-list-mode-map
   "RET" #'shex-manifest-browser-run-entry
   "a" #'shex-manifest-browser-run-all
+  "m" #'shex-manifest-browser-columns-menu
   "C-c C-c" #'shex-manifest-browser-toggle-display)
 
 (define-derived-mode shex-manifest-browser-mode tabulated-list-mode "ShEx-Manifest"
@@ -1064,7 +1268,9 @@ puts point on the same entry it was on before toggling."
 `shex-manifest-browser-open'.  `RET' runs the entry at point;
 `a' (`shex-manifest-browser-run-all') runs every entry; `g'
 \(`revert-buffer', bound by `tabulated-list-mode' already) reparses the
-manifest file, discarding results; `C-c C-c'
+manifest file, discarding results; `m'
+\(`shex-manifest-browser-columns-menu') picks which columns are shown
+and their order; `C-c C-c'
 \(`shex-manifest-browser-toggle-display', `image-toggle-display'-style)
 switches to editing the manifest's raw YAML text directly (`C-c C-c'
 there switches back to this table).
@@ -1076,9 +1282,8 @@ C-s' can't clobber the manifest with this mode's own rendering; use
 `C-c C-c' to resume editing its YAML directly, rather than `find-file'
 or `shex-manifest-browser-open' again).
 
-The `Data'/`Schema' columns are resized to fit whenever a window
-showing this buffer is resized -- see
-`shex-manifest-browser--set-column-widths'."
+Columns are resized to fit whenever a window showing this buffer is
+resized -- see `shex-manifest-browser--set-column-widths'."
   (setq tabulated-list-padding 2)
   (setq tabulated-list-entries #'shex-manifest-browser--entries-fn)
   (setq revert-buffer-function #'shex-manifest-browser-revert)
