@@ -50,11 +50,31 @@
         (when (and (not (string-match-p "/" f))
                    (not (string-suffix-p "-tests.el" f))
                    (not (string= f self)))
-          ;; `byte-recompile-file's 4-argument (LOAD) form is
-          ;; deprecated as of Emacs 28.1 in favor of this 3-argument
-          ;; call followed by an explicit `load' (extensionless, so it
-          ;; picks up the just-compiled `.elc' via `load-suffixes').
           (let ((full (expand-file-name f here)))
+            ;; `defvar-keymap' (like plain `defvar') only initializes
+            ;; a variable the FIRST time it's evaluated -- reloading a
+            ;; file whose `defvar-keymap' form gained a new binding
+            ;; (e.g. "m" -> `shex-manifest-browser-columns-menu') would
+            ;; otherwise leave an already-loaded session's copy of that
+            ;; keymap untouched, even though `defun'/`transient-define-
+            ;; prefix' commands in the same file redefine unconditionally
+            ;; on every load -- exactly the "M-x the command works, the
+            ;; key binding doesn't" symptom this fixes. Scanned from each
+            ;; file's own source text rather than hardcoded, so a future
+            ;; `defvar-keymap' just works; scoped to symbols THIS
+            ;; package's own tracked files actually define, not a broad
+            ;; "-mode-map$" sweep of every bound symbol, so it can't
+            ;; touch an unrelated package's keymap.
+            (with-temp-buffer
+              (insert-file-contents full)
+              (goto-char (point-min))
+              (while (re-search-forward "^(defvar-keymap +\\([^ \t\n]+\\)" nil t)
+                (let ((sym (intern (match-string 1))))
+                  (when (boundp sym) (makunbound sym)))))
+            ;; `byte-recompile-file's 4-argument (LOAD) form is
+            ;; deprecated as of Emacs 28.1 in favor of this 3-argument
+            ;; call followed by an explicit `load' (extensionless, so it
+            ;; picks up the just-compiled `.elc' via `load-suffixes').
             (byte-recompile-file full nil 0)
             (load (file-name-sans-extension full)))))))
 )
