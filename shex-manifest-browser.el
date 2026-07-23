@@ -387,6 +387,20 @@ mismatch."
   "Hash table, entry index -> (PASS . DETAILS), filled in by
 `shex-manifest-browser-run-entry'/`shex-manifest-browser-run-all'.")
 (put 'shex-manifest-browser--results 'permanent-local t)
+(defvar-local shex-manifest-browser--saved-undo-list nil
+  "`buffer-undo-list' captured from the YAML view just before
+`shex-manifest-browser--show-table' switches away from it (any
+major-mode change, via `kill-all-local-variables', would otherwise
+silently reset it to empty) -- restored by
+`shex-manifest-browser--show-yaml' when toggling back, so an
+edit/toggle-to-table-to-run/toggle-back-to-YAML cycle doesn't erase
+editing history from before the trip.  Only captured when the buffer
+text about to be reloaded on the way back is known to match what's
+on disk right now (saved, or already unmodified) -- see
+`shex-manifest-browser--show-table' -- since a discarded edit means
+the text `--show-yaml' re-reads won't match what this undo list was
+recorded against.")
+(put 'shex-manifest-browser--saved-undo-list 'permanent-local t)
 
 ;;; Side-by-side display, node/shape highlighting
 
@@ -682,8 +696,8 @@ buffer save back into the manifest file itself (see
   (let ((result (gethash index shex-manifest-browser--results)))
     (list index
           (vector (number-to-string (1+ index))
-                  (or (shex-manifest-browser--get entry 'schemaLabel) "")
                   (or (shex-manifest-browser--get entry 'dataLabel) "")
+                  (or (shex-manifest-browser--get entry 'schemaLabel) "")
                   (or (shex-manifest-browser--get entry 'status) "")
                   (cond
                    ((null result) "")
@@ -739,7 +753,7 @@ state from the manifest at PATH."
 (defun shex-manifest-browser--set-column-widths ()
   "Recompute `tabulated-list-format' column widths from the selected
 window's current width and redraw: `#'/`Expected' stay fixed (short,
-fixed vocabulary), `Schema'/`Data' split whatever's left evenly, and
+fixed vocabulary), `Data'/`Schema' split whatever's left evenly, and
 `Result' (width 0) takes whatever remains after that -- so widening or
 narrowing a window showing this buffer keeps `Schema'/`Data' readable
 instead of truncating at a width fixed when the mode turned on.
@@ -754,8 +768,8 @@ every resize."
            (data (- schema-data schema)))
       (setq tabulated-list-format
             (vector (list "#" fixed-cols nil)
-                    (list "Schema" schema t)
                     (list "Data" data t)
+                    (list "Schema" schema t)
                     (list "Expected" expected-col t)
                     (list "Result" 0 t)))
       (tabulated-list-init-header)
@@ -981,6 +995,18 @@ in the table, per `shex-manifest-browser--entry-start-position'."
     (setq buffer-file-name path)
     (set-visited-file-modtime)
     (set-buffer-modified-p nil)
+    ;; Restore the undo history from before the trip to table view --
+    ;; see `shex-manifest-browser--saved-undo-list'.  Unconditional,
+    ;; not just when there's a captured list to restore: `buffer-undo-
+    ;; list' is itself a built-in permanent-local variable, so
+    ;; `tabulated-list-mode's own `(setq-local buffer-undo-list t)'
+    ;; (disabling undo for the table view -- appropriate there, it's a
+    ;; computed display) would otherwise survive the switch back to
+    ;; `yaml-mode' above and leave undo silently disabled going
+    ;; forward, even with nothing to restore (e.g. the first-ever trip
+    ;; to table view, before any history has been captured).
+    (setq buffer-undo-list shex-manifest-browser--saved-undo-list)
+    (setq shex-manifest-browser--saved-undo-list nil)
     (shex-manifest-browser-yaml-view-mode 1)
     (goto-char (if index (shex-manifest-browser--entry-start-position index) (point-min)))))
 
@@ -1000,6 +1026,14 @@ land on -- the same entry point was in within the YAML text, per
         (save-buffer)
       (unless (y-or-n-p "Discard unsaved changes? ")
         (user-error "Not switching to table view"))))
+  ;; Stash the undo history for `shex-manifest-browser--show-yaml' to
+  ;; restore later, but only when the buffer text matches disk right
+  ;; now (saved above, or already clean) -- if the user just discarded
+  ;; unsaved edits instead, this undo list was recorded against text
+  ;; that the later `insert-file-contents' won't reproduce, so it'd be
+  ;; garbage to replay against the reloaded buffer.
+  (setq shex-manifest-browser--saved-undo-list
+        (and (not (buffer-modified-p)) buffer-undo-list))
   (let ((path (expand-file-name shex-manifest-browser--manifest-file
                                  shex-manifest-browser--manifest-dir)))
     (setq buffer-file-name nil)
@@ -1042,7 +1076,7 @@ C-s' can't clobber the manifest with this mode's own rendering; use
 `C-c C-c' to resume editing its YAML directly, rather than `find-file'
 or `shex-manifest-browser-open' again).
 
-The `Schema'/`Data' columns are resized to fit whenever a window
+The `Data'/`Schema' columns are resized to fit whenever a window
 showing this buffer is resized -- see
 `shex-manifest-browser--set-column-widths'."
   (setq tabulated-list-padding 2)

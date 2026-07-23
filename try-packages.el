@@ -50,5 +50,11 @@
         (when (and (not (string-match-p "/" f))
                    (not (string-suffix-p "-tests.el" f))
                    (not (string= f self)))
-          (byte-recompile-file (expand-file-name f here) nil 0 t)))))
+          ;; `byte-recompile-file's 4-argument (LOAD) form is
+          ;; deprecated as of Emacs 28.1 in favor of this 3-argument
+          ;; call followed by an explicit `load' (extensionless, so it
+          ;; picks up the just-compiled `.elc' via `load-suffixes').
+          (let ((full (expand-file-name f here)))
+            (byte-recompile-file full nil 0)
+            (load (file-name-sans-extension full)))))))
 )
