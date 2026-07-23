@@ -31,7 +31,24 @@
     ;; here in this file.
     (setq shex-validate-rudof-module-path
           (expand-file-name "../rudof/target/release/libemacs_rudof.so" here))
-    (load-library (expand-file-name "shexc-ts-mode.el" here))
-    (load-library (expand-file-name "shex-validate.el" here))
-    (load-library (expand-file-name "shex-manifest-browser.el" here)))
+    ;; Recompile-if-stale + load every top-level tracked library file,
+    ;; rather than a hand-maintained list of entry points: new .el
+    ;; files just show up here on the next run, and a source file
+    ;; edited since its last `.elc' (the `rdf-turtle-buffer-directive-
+    ;; ctx' bug: a stale `.elc' shadowed a newer `defun' in its `.el')
+    ;; gets rebuilt instead of silently loading old bytecode. Limited
+    ;; to git-tracked, top-level, non-test files: `-tests.el' files
+    ;; register ERT tests rather than defining the packages themselves,
+    ;; and anything below a subdirectory (example/, .github/scripts/)
+    ;; is demo or CI scaffolding, not part of the loadable package set.
+    (let ((self (file-name-nondirectory (or load-file-name buffer-file-name)))
+          (tracked (with-temp-buffer
+                     (let ((default-directory here))
+                       (call-process "git" nil t nil "ls-files" "--" "*.el"))
+                     (split-string (buffer-string) "\n" t))))
+      (dolist (f tracked)
+        (when (and (not (string-match-p "/" f))
+                   (not (string-suffix-p "-tests.el" f))
+                   (not (string= f self)))
+          (byte-recompile-file (expand-file-name f here) nil 0 t)))))
 )
