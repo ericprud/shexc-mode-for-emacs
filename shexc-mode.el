@@ -1,4 +1,4 @@
-﻿;;; shexc-mode.el --- mode for ShExC
+﻿;;; shexc-mode.el --- mode for ShExC  -*- lexical-binding: t; -*-
 
 ;; Copyright (c) 2003-2007 Hugo Haas <hugo@larve.net>
 ;; re-worked and re-published by kurtjx (c) 2010 <kurtjx@gmail.com>
@@ -85,6 +85,12 @@
 
 ;;; Code:
 
+(defvar shexc-highlights nil
+  "`font-lock-defaults' keyword list for `shexc-mode', built once
+below from the ShExC grammar's regexps.")
+(defvar shex-imenu-generic-expression nil
+  "`imenu-generic-expression' for `shexc-mode', built once below.")
+
 ;; the command to comment/uncomment text
 (defun shexc-comment-dwim (arg)
 "Comment or uncomment current line or region in a smart way.
@@ -98,11 +104,6 @@ For detail, see `comment-dwim'."
        (HEX		"[0-9A-Fa-f]")
        (UCHAR		(format "\\(?:\\\\u%s%s%s%s\\|\\\\U%s%s%s%s%s%s%s%s\\)" HEX HEX HEX HEX HEX HEX HEX HEX HEX HEX HEX HEX))
        (IRIREF		(format "<\\(?:[^\x0\ -\x20\ <>\"{}|^`\\\\]\\|%s\\)*>" UCHAR)) ; #x00=NULL #01-#x1F=control codes #x20=space
-       (LANGTAG		"@[a-zA-Z]+\\(?:'-'[a-zA-Z0-9]+\\)*")
-       (INTEGER		"[+-]?[0-9]+")
-       (DECIMAL		"[+-]?[0-9]*\\.[0-9]+")
-       (EXPONENT	"[eE][+-]?[0-9]+")
-       (DOUBLE		(format "[+-]?\\(?:[0-9]+\\.[0-9]*%s\\|\\.[0-9]+%s|[0-9]+%s" EXPONENT EXPONENT EXPONENT))
        (ECHAR		"\\(?:\\\\[tbnrf\"'\\\\]\\)")
        (STRING_LITERAL1	(format "'\\(?:[^\x27\ \x5C\ \xA\ \xD\ ]\\|%s\\|%s\\)*'" ECHAR UCHAR)) ; #x27=' #x5C=\ #xA=new line #xD=carriage return
        (STRING_LITERAL2	(format "\"\\(?:[^\x22\ \x5C\ \xA\ \xD\ ]\\|%s\\|%s\\)*\"" ECHAR UCHAR)) ; #x22=" #x5C=\ #xA=new line #xD=carriage return
@@ -236,3 +237,5 @@ For detail, see `comment-dwim'."
   
   ;; (run-mode-hooks 'shexc-mode-hook) ;; automatically done by define-derived-mode
 )
+
+(provide 'shexc-mode)
