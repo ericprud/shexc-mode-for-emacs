@@ -126,18 +126,28 @@ tree-sitter parser already created, as `(current-buffer)'."
                  "<http://a/n1>@<http://a/S1>,\n<http://a/n2>@<http://a/S2>")))
 
 ;;; `shex-manifest-browser--pass-p'
+;;
+;; SCHEMA-BUFFER/DATA-BUFFER are nil in most of these -- every NODE/
+;; SHAPE here is already an absolute `<http://...>' IRI, so `--resolve-
+;; node-text'/`--resolve-shape-text' have nothing to resolve regardless
+;; of whether a real buffer backs them (see their own "unchanged... or
+;; when [the buffer] isn't live" fallback).  The BASE-relative cases
+;; below (`-resolves-relative-node-against-data-base'/`-resolves-
+;; relative-shape-against-schema-base') are what actually need real
+;; buffers, and use the `--with-schema-buffer'/`--with-data-buffer'
+;; macros for that.
 
 (ert-deftest shex-manifest-browser-test-pass-p-match ()
   (let* ((entry '((status . "conformant")))
          (assocs (list (shex-manifest-browser-test--assoc "<http://a/n>" "<http://a/S>")))
          (quadruples '(("http://a/n" "http://a/S" "conformant" "ok"))))
-    (should (car (shex-manifest-browser--pass-p entry assocs quadruples)))))
+    (should (car (shex-manifest-browser--pass-p entry assocs quadruples nil nil)))))
 
 (ert-deftest shex-manifest-browser-test-pass-p-mismatch ()
   (let* ((entry '((status . "conformant")))
          (assocs (list (shex-manifest-browser-test--assoc "<http://a/n>" "<http://a/S>")))
          (quadruples '(("http://a/n" "http://a/S" "nonconformant" "nope"))))
-    (let ((result (shex-manifest-browser--pass-p entry assocs quadruples)))
+    (let ((result (shex-manifest-browser--pass-p entry assocs quadruples nil nil)))
       (should-not (car result))
       (should (= (length (cdr result)) 1))
       (should (string-search "expected conformant, got nonconformant" (car (cdr result)))))))
@@ -145,7 +155,7 @@ tree-sitter parser already created, as `(current-buffer)'."
 (ert-deftest shex-manifest-browser-test-pass-p-missing-result-fails ()
   (let* ((entry '((status . "conformant")))
          (assocs (list (shex-manifest-browser-test--assoc "<http://a/n>" "<http://a/S>"))))
-    (let ((result (shex-manifest-browser--pass-p entry assocs '())))
+    (let ((result (shex-manifest-browser--pass-p entry assocs '() nil nil)))
       (should-not (car result))
       (should (string-search "no result" (car (cdr result)))))))
 
@@ -156,13 +166,56 @@ tree-sitter parser already created, as `(current-buffer)'."
   (let* ((entry '((status . "conformant")))
          (assocs (list (shex-manifest-browser-test--assoc "<http://a/n>" "<http://a/S>" t)))
          (quadruples '(("http://a/n" "http://a/S" "nonconformant" "correctly failed"))))
-    (should (car (shex-manifest-browser--pass-p entry assocs quadruples)))))
+    (should (car (shex-manifest-browser--pass-p entry assocs quadruples nil nil)))))
 
 (ert-deftest shex-manifest-browser-test-pass-p-negated-association-conformant-fails ()
   (let* ((entry '((status . "conformant")))
          (assocs (list (shex-manifest-browser-test--assoc "<http://a/n>" "<http://a/S>" t)))
          (quadruples '(("http://a/n" "http://a/S" "conformant" "shouldn't have passed"))))
-    (should-not (car (shex-manifest-browser--pass-p entry assocs quadruples)))))
+    (should-not (car (shex-manifest-browser--pass-p entry assocs quadruples nil nil)))))
+
+(ert-deftest shex-manifest-browser-test-pass-p-resolves-relative-node-against-data-base ()
+  ;; Regression test for the bug reported live against tests-manifest.yaml
+  ;; entry "<Person>" (schemaURL-referenced): a quadruple's own NODE is
+  ;; fully resolved against BASE (confirmed against a real `rudof' run --
+  ;; "<#Alice>" came back as "http://a.example/#Alice", not "#Alice"), so
+  ;; matching the association's own `<>'-stripped-only node text against
+  ;; it always failed, reporting "no result" even though a matching
+  ;; quadruple was right there.
+  (shex-manifest-browser-test--with-data-buffer "BASE <http://a.example/>\n<#Alice> a <x> .\n"
+    (let* ((data-buffer (current-buffer))
+           (entry '((status . "conformant")))
+           (assocs (list (shex-manifest-browser-test--assoc "<#Alice>" "<http://a.example/S>")))
+           (quadruples '(("http://a.example/#Alice" "http://a.example/S" "conformant" "ok"))))
+      (should (car (shex-manifest-browser--pass-p entry assocs quadruples nil data-buffer))))))
+
+(ert-deftest shex-manifest-browser-test-pass-p-resolves-relative-shape-against-schema-base ()
+  ;; Same as above, for the SHAPE half of the match: a relative shape
+  ;; reference (e.g. "<TGeek>") resolves against the SCHEMA's own BASE,
+  ;; matching how a quadruple's own SHAPE comes back fully resolved.
+  (shex-manifest-browser-test--with-schema-buffer "BASE <http://a.example/>\n<S> { }\n"
+    (let* ((schema-buffer (current-buffer))
+           (entry '((status . "conformant")))
+           (assocs (list (shex-manifest-browser-test--assoc "<http://a.example/n>" "<S>")))
+           (quadruples '(("http://a.example/n" "http://a.example/S" "conformant" "ok"))))
+      (should (car (shex-manifest-browser--pass-p entry assocs quadruples schema-buffer nil))))))
+
+(ert-deftest shex-manifest-browser-test-pass-p-disambiguates-node-tested-against-several-shapes ()
+  ;; Regression test for the ORIGINAL bug report: a node's schema
+  ;; chaining through EXTENDS (e.g. <TGeek> EXTENDS @<Item>) makes
+  ;; `rudof-validate-shex' report one quadruple per shape actually
+  ;; evaluated, not just the one requested -- matching by NODE alone
+  ;; risked picking a *different* shape's status.  The "wrong" one
+  ;; (Item, nonconformant) deliberately sorts first here; only the
+  ;; (node . shape) match, preferred over the plain NODE fallback,
+  ;; gets this right regardless of quadruple order.
+  (shex-manifest-browser-test--with-schema-buffer "BASE <http://a.example/>\n<Item> { }\n<TGeek> EXTENDS @<Item> { }\n"
+    (let* ((schema-buffer (current-buffer))
+           (entry '((status . "conformant")))
+           (assocs (list (shex-manifest-browser-test--assoc "<http://a.example/n>" "<TGeek>")))
+           (quadruples '(("http://a.example/n" "http://a.example/Item" "nonconformant" "extends-chain")
+                         ("http://a.example/n" "http://a.example/TGeek" "conformant" "own-check"))))
+      (should (car (shex-manifest-browser--pass-p entry assocs quadruples schema-buffer nil))))))
 
 ;;; `shex-manifest-browser--content-buffer' reuse/reap policy
 
