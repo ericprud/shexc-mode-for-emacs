@@ -1080,6 +1080,20 @@ so they're absent here -- `shex-manifest-browser--field-position'
 returns nil for them, and callers fall back to the entry's own
 `- ...' start line.")
 
+(defun shex-manifest-browser--top-level-key-regexp (&optional key)
+  "Regexp matching a manifest entry's own top-level `KEY: ...' lines --
+either the first key, sharing its line with the entry's own `- '
+marker, or a later one at the same two-column indentation -- but not
+a `KEY:'-shaped line buried inside another key's block-scalar body
+\(e.g. some ShExC/Turtle comment a `schema: |'/`data: |' body happens
+to contain), which sits at a deeper indentation.  KEY, if non-nil, a
+symbol, restricts the match to that key by name (used by
+`shex-manifest-browser--field-position'); otherwise any bare
+identifier key name matches (used by
+`shex-manifest-browser--column-at-yaml-point', which doesn't know the
+key up front)."
+  (format "^\\(?:- \\|  \\)\\(%s\\):" (if key (regexp-quote (symbol-name key)) "[A-Za-z]+")))
+
 (defun shex-manifest-browser--field-position (beg end column)
   "Position of the first line within BEG..END (an entry's own span,
 per `shex-manifest-browser--entry-span') declaring one of COLUMN's
@@ -1091,9 +1105,17 @@ none of its candidate keys."
     (seq-some
      (lambda (key)
        (goto-char beg)
-       (when (re-search-forward (format "^ *%s:" (regexp-quote (symbol-name key))) end t)
+       (when (re-search-forward (shex-manifest-browser--top-level-key-regexp key) end t)
          (pos-bol)))
      (alist-get column shex-manifest-browser--column-yaml-keys))))
+
+(defun shex-manifest-browser--column-for-yaml-key (key)
+  "Which `shex-manifest-browser-columns' key has KEY (a string, e.g.
+\"dataLabel\") among its `shex-manifest-browser--column-yaml-keys'
+candidates -- the reverse of that alist.  nil if KEY isn't any
+column's candidate (e.g. `queryMap')."
+  (car (seq-find (lambda (kv) (memq (intern key) (cdr kv)))
+                  shex-manifest-browser--column-yaml-keys)))
 
 (defun shex-manifest-browser--column-at-point ()
   "Which `shex-manifest-browser-columns' key the tabulated-list cell
@@ -1103,6 +1125,45 @@ point isn't on a recognized column (e.g. the header line, or a
 column hidden/renamed since this text was drawn)."
   (when-let* ((title (get-text-property (point) 'tabulated-list-column-name)))
     (car (rassoc title shex-manifest-browser--column-titles))))
+
+(defun shex-manifest-browser--column-at-yaml-point ()
+  "Which `shex-manifest-browser-columns' key point's current position
+in the manifest's YAML text belongs to -- the reverse of
+`shex-manifest-browser--field-position': the last top-level `KEY:'
+line (`shex-manifest-browser--top-level-key-regexp') at or before
+point within its enclosing entry, mapped back to a column via
+`shex-manifest-browser--column-for-yaml-key' -- so point anywhere
+inside a `KEY: |' block scalar body still resolves to KEY's own
+column, not nil, the same way `shex-manifest-browser--entry-index-at-
+point' resolves point anywhere within an entry to that entry's index
+rather than only right at its `- ...' line.  nil if point isn't
+within any entry yet (e.g. a leading comment block), or its nearest
+key has no column mapping (e.g. `queryMap:')."
+  (when-let* ((index (shex-manifest-browser--entry-index-at-point)))
+    (pcase-let* ((`(,beg . ,end) (shex-manifest-browser--entry-span index))
+                 (here (point))
+                 (key nil))
+      (save-excursion
+        (goto-char beg)
+        (while (and (re-search-forward (shex-manifest-browser--top-level-key-regexp) end t)
+                    (<= (match-beginning 0) here))
+          (setq key (match-string 1))))
+      (and key (shex-manifest-browser--column-for-yaml-key key)))))
+
+(defun shex-manifest-browser--goto-column (column)
+  "Within the tabulated-list row point is currently on, move point to
+the start of COLUMN's cell, via the `tabulated-list-column-name' text
+property `tabulated-list-print-col' puts on every cell -- the reverse
+of `shex-manifest-browser--column-at-point'.  Leaves point at the
+row's own start (a no-op) if COLUMN isn't currently visible (e.g.
+hidden via `shex-manifest-browser-columns-menu')."
+  (let ((title (shex-manifest-browser--column-title column))
+        (pos (pos-bol))
+        (eol (pos-eol)))
+    (while (and pos (< pos eol)
+                (not (equal (get-text-property pos 'tabulated-list-column-name) title)))
+      (setq pos (next-single-property-change pos 'tabulated-list-column-name nil eol)))
+    (goto-char (if (and pos (< pos eol)) pos (pos-bol)))))
 
 (defun shex-manifest-browser--key-block-region (beg end key)
   "Within BEG..END (an entry's own span, per
@@ -1264,7 +1325,7 @@ Falls back to the entry's start line if COLUMN has no YAML-key mapping
         (when-let* ((pos (shex-manifest-browser--field-position beg end column)))
           (goto-char pos))))))
 
-(defun shex-manifest-browser--show-table (&optional index)
+(defun shex-manifest-browser--show-table (&optional index column)
   "Switch this buffer back to its `shex-manifest-browser-mode' table
 view, re-reading the manifest from disk (so an edit made in the YAML
 view -- e.g. to a `queryMap''s node/shape reference -- is reflected
@@ -1274,7 +1335,13 @@ If the YAML view has unsaved edits, offers to save (or discard) them
 first, since they'd otherwise be silently lost when the manifest is
 re-read.  INDEX, if non-nil, is which entry (0-indexed) point should
 land on -- the same entry point was in within the YAML text, per
-`shex-manifest-browser--entry-index-at-point'."
+`shex-manifest-browser--entry-index-at-point'.  COLUMN, if non-nil,
+additionally positions point on that entry row's cell for that column
+\(`shex-manifest-browser--goto-column') -- the reverse of
+`shex-manifest-browser--show-yaml's COLUMN argument: which key's line
+point was on in the YAML (`shex-manifest-browser--column-at-yaml-
+point') carries over to which column point lands in back in the
+table."
   (when (buffer-modified-p)
     (if (y-or-n-p "Save changes to the manifest file before switching to table view? ")
         (save-buffer)
@@ -1295,21 +1362,27 @@ land on -- the same entry point was in within the YAML text, per
     (shex-manifest-browser--initialize path)
     (tabulated-list-print)
     (set-buffer-modified-p nil)
-    (when index (shex-manifest-browser--goto-entry-row index))))
+    (when index
+      (shex-manifest-browser--goto-entry-row index)
+      (when column (shex-manifest-browser--goto-column column)))))
 
 (defun shex-manifest-browser-toggle-display ()
   "Toggle between this manifest's terse tabulated-list view and its
 raw YAML text -- like `image-toggle-display' toggles an image buffer
 between the rendered image and its underlying bytes.  Either direction
-puts point on the same entry it was on before toggling; going to the
-YAML view additionally lands on the specific line for whichever
-column point was in (`shex-manifest-browser--column-at-point'), per
-`shex-manifest-browser--show-yaml's COLUMN argument."
+puts point on the same entry it was on before toggling, and, in
+either direction, on the corresponding column/YAML-key too: which
+column point was in the table (`shex-manifest-browser--column-at-
+point') decides which line `shex-manifest-browser--show-yaml' lands
+on, and which key's line point was on in the YAML
+\(`shex-manifest-browser--column-at-yaml-point') decides which column
+`shex-manifest-browser--show-table' lands on."
   (interactive)
   (if (derived-mode-p 'shex-manifest-browser-mode)
       (shex-manifest-browser--show-yaml (tabulated-list-get-id)
                                          (shex-manifest-browser--column-at-point))
-    (shex-manifest-browser--show-table (shex-manifest-browser--entry-index-at-point))))
+    (shex-manifest-browser--show-table (shex-manifest-browser--entry-index-at-point)
+                                        (shex-manifest-browser--column-at-yaml-point))))
 
 (defvar-keymap shex-manifest-browser-mode-map
   :parent tabulated-list-mode-map
