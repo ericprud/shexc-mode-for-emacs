@@ -359,9 +359,11 @@ evaluated) would otherwise risk a *different* shape's status getting
 attributed to the association actually being checked.  Returns
 SHAPE-TEXT itself, unresolved, for any other form (e.g.
 `prefix:local' -- unused by this package's own manifests today, but
-nothing stops a future one) or when SCHEMA-BUFFER isn't live; a
-caller comparing the result against SHAPE-TEXT itself can tell
-resolution didn't happen and fall back accordingly."
+nothing stops a future one) or when SCHEMA-BUFFER isn't live --
+callers should treat a match against the result as a preference, not
+a guarantee, since there's no live `rudof' here to confirm this
+resolves exactly the way it does (see
+`shex-manifest-browser--pass-p')."
   (cond
    ((member shape-text '("START" "Start")) "Start")
    ((and schema-buffer (buffer-live-p schema-buffer)
@@ -380,14 +382,19 @@ association expects ENTRY's `status' itself.  Returns (PASS . DETAILS),
 DETAILS a list of \"NODE@SHAPE: expected E, got A\" strings for any
 mismatch.
 
-Matches each association's quadruple by (NODE . SHAPE) -- resolving
-the association's own SHAPE-TEXT via SCHEMA-BUFFER
+Prefers matching each association's quadruple by (NODE . SHAPE) --
+resolving the association's own SHAPE-TEXT via SCHEMA-BUFFER
 \(`shex-manifest-browser--resolve-shape-text') to compare against
 QUADRUPLES' already-fully-resolved SHAPE, since NODE alone isn't
-always unique there (see that function).  Falls back to NODE alone
-when SHAPE-TEXT couldn't be resolved to something comparable -- no
-worse than matching by NODE alone unconditionally, which is what this
-function did before it considered SHAPE at all."
+always unique there (see that function) -- but always falls back to
+matching by NODE alone when that fails to find anything, not only
+when SHAPE-TEXT couldn't be resolved: this package's own SHAPE
+resolution has no live `rudof' to check its exact output format
+against, so an exact match is a bonus when it lands, never a
+requirement -- silently swallowing a real quadruple match just
+because the resolved SHAPE string happened not to agree with
+`rudof''s own formatting would be worse than the NODE-only ambiguity
+this is meant to fix in the first place."
   (let ((entry-status (shex-manifest-browser--get entry 'status))
         details)
     (dolist (a assocs)
@@ -397,8 +404,7 @@ function did before it considered SHAPE at all."
              (resolved-shape (shex-manifest-browser--resolve-shape-text schema-buffer shape-text))
              (quad (or (seq-find (lambda (q) (and (equal (nth 0 q) node) (equal (nth 1 q) resolved-shape)))
                                   quadruples)
-                       (and (equal resolved-shape shape-text) ; resolution didn't happen -- fall back
-                            (seq-find (lambda (q) (equal (nth 0 q) node)) quadruples))))
+                       (seq-find (lambda (q) (equal (nth 0 q) node)) quadruples)))
              (actual (and quad (nth 2 quad))))
         (unless (equal actual expected)
           (push (format "%s@%s: expected %s, got %s"
