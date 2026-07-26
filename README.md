@@ -860,26 +860,40 @@ validation via [rudof](https://github.com/rudof-project/rudof)'s
 `rudof_emacs` dynamic module — a held, mutable handle into rudof's own
 Rust validator, not a subprocess call per check.
 
-**Status: experimental, and `rudof_emacs` isn't released yet.** You'll
-need to build it yourself:
-
-```shell
-git clone https://github.com/rudof-project/rudof
-cd rudof
-cargo build --release -p rudof_emacs
-```
-
-This produces `target/release/librudof_emacs.{dylib,so,dll}` (the
-extension depends on your platform). Then, alongside loading
-`shex-validate.el` itself:
+**Status: experimental, and `emacs-rudof` isn't released yet.** It has
+to be built from a [rudof](https://github.com/rudof-project/rudof)
+checkout — but you don't have to do that by hand: with
 
 ```lisp
 (add-to-list 'load-path "{folder that contains shex-validate.el}")
 (require 'shex-validate)
-
-(setq shex-validate-rudof-module-path
-      "/path/to/rudof/target/release/librudof_emacs.dylib")
 ```
+
+the first validation attempt looks for an already-built module on its
+own (a previously installed copy under `~/.emacs.d/shex/`, common
+checkout locations, then `locate`/`mdfind`), and `M-x
+shex-validate-setup` walks through the rest interactively: navigate to
+a built module or to a directory, and it offers to clone rudof there,
+run `cargo build --release -p emacs-rudof` in the background, copy the
+resulting `libemacs_rudof.{dylib,so,dll}` into `~/.emacs.d/shex/`, and
+save `shex-validate-rudof-module-path` for future sessions via
+Customize.
+
+Prefer to do it yourself? The manual equivalent:
+
+```shell
+git clone https://github.com/rudof-project/rudof
+cd rudof
+cargo build --release -p emacs-rudof
+```
+
+```lisp
+(setq shex-validate-rudof-module-path
+      "/path/to/rudof/target/release/libemacs_rudof.dylib")
+```
+
+(A module built before the crate's `rudof_emacs` → `emacs-rudof`
+rename — `librudof_emacs.{dylib,so,dll}` — still works too.)
 
 ### Trying it out
 

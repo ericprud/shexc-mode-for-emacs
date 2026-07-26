@@ -15,8 +15,9 @@
 ;; against a separate ShExC schema buffer and a separate ShapeMap
 ;; buffer through the `emacs-rudof' dynamic module
 ;; (https://github.com/rudof-project/rudof's `emacs-rudof' crate --
-;; not yet released; build it yourself with `cargo build --release -p
-;; emacs-rudof' against a `rudof' checkout and point
+;; not yet released; `M-x shex-validate-setup' walks through finding
+;; an already-built copy, or cloning rudof and running `cargo build
+;; --release -p emacs-rudof' itself, and pointing
 ;; `shex-validate-rudof-module-path' at the resulting shared
 ;; library). Also accepts a module built before that crate's
 ;; `rudof_emacs' -> `emacs-rudof' rename -- see
@@ -76,7 +77,11 @@
   "Path to the built `emacs-rudof' dynamic module
 \(`libemacs_rudof.dylib'/`.so'/`.dll', depending on platform), e.g.
 \"~/checkouts/rudof-project/rudof/target/release/libemacs_rudof.dylib\".
-Required before any `shex-validate' function can run.
+Required before any `shex-validate' function can run -- but nil (the
+default) isn't a dead end: `shex-validate--ensure-module' hunts for a
+built module on its own, and `M-x shex-validate-setup' can find,
+clone, and build one interactively and set (and optionally save) this
+option for you.
 
 A path to the older, pre-rename `librudof_emacs.dylib'/`.so'/`.dll'
 also works -- see `shex-validate--upgrade-module-path', which
@@ -201,14 +206,389 @@ which must run first."
     (error "shex-validate--rudof-fn called before shex-validate--ensure-module"))
   (intern (concat shex-validate--fn-prefix (symbol-name name))))
 
+;;; Module discovery and interactive setup
+;;
+;; `shex-validate-rudof-module-path' being nil (the out-of-the-box
+;; state) used to be a dead end: a bare "set it first" `user-error'.
+;; Now `shex-validate--ensure-module' first hunts for an already-built
+;; module on its own (`shex-validate--module-candidates') and, failing
+;; that, hands off to the `shex-validate-setup' wizard -- which can
+;; also clone rudof and build the crate -- when it's safe to prompt.
+;; "Safe" matters because `shex-validate--ensure-module' is mostly
+;; reached from flymake's *idle-timer* re-checks, where popping a
+;; minibuffer prompt at the user (again on every re-check) would be
+;; hostile; `this-command' being non-nil is the tell that we're inside
+;; an explicit user command (`shex-validate-link-buffers', the
+;; `shex-validate-quick' commands, `M-x flymake-start', ...) instead.
+
+(defconst shex-validate--rudof-clone-url
+  "https://github.com/rudof-project/rudof"
+  "Where `shex-validate-setup' offers to clone rudof from.")
+
+(defconst shex-validate--setup-buffer-name "*shex-validate rudof setup*"
+  "Buffer `shex-validate-setup' streams its `git clone'/`cargo build'
+subprocess output into.")
+
+(defconst shex-validate--module-basenames
+  (cond ((eq system-type 'windows-nt) '("emacs_rudof.dll" "rudof_emacs.dll"))
+        ((eq system-type 'darwin) '("libemacs_rudof.dylib" "librudof_emacs.dylib"))
+        (t '("libemacs_rudof.so" "librudof_emacs.so")))
+  "File names a built `emacs-rudof' module can have on this platform,
+most preferable first -- the current crate name, then the pre-rename
+`rudof_emacs' one (see `shex-validate--upgrade-module-path'). Windows
+has no `lib' prefix because cargo doesn't add one for `cdylib's there.")
+
+(defcustom shex-validate-module-install-directory
+  (locate-user-emacs-file "shex/")
+  "Where `shex-validate-setup' offers to copy the built `emacs-rudof'
+module -- so validation keeps working if the rudof checkout it was
+built in later moves, gets `cargo clean'ed, or was only cloned for
+this purpose in the first place. Also the first place
+`shex-validate--module-candidates' looks."
+  :type 'directory
+  :group 'shex-validate)
+
+(defun shex-validate--module-search-roots ()
+  "Directories worth globbing for a rudof checkout (as `ROOT/rudof' or
+`ROOT/*/rudof'): the conventional code-checkout homes that actually
+exist on this machine, plus `~' itself."
+  (seq-filter #'file-directory-p
+              (mapcar #'expand-file-name
+                      '("~" "~/checkouts" "~/src" "~/git" "~/code"
+                        "~/projects" "~/dev"))))
+
+(defun shex-validate--system-locate (name)
+  "Paths this machine's file indexer knows for basename NAME, or nil if
+it has none (or there's no indexer): `mdfind' (Spotlight) on macOS,
+`plocate'/`locate' on GNU/Linux, Everything's `es' on Windows --
+whichever exists, tried in that order. Results may be stale (the
+index lags the filesystem), so callers must re-check `file-exists-p'."
+  (when-let* ((cmd (cond
+                    ((executable-find "mdfind") (list "mdfind" "-name" name))
+                    ((executable-find "plocate") (list "plocate" "-b" "-l" "50" name))
+                    ((executable-find "locate") (list "locate" "-l" "50" name))
+                    ((executable-find "es") (list "es" "-n" "50" name)))))
+    (ignore-errors (apply #'process-lines-ignore-status cmd))))
+
+(defun shex-validate--module-preference (path)
+  "Sort key for a found module PATH -- smaller is better: a
+current-name module beats a pre-rename one (their function sets
+differ, and the newer crate is the maintained one), a release build
+beats a debug one (same code, tens of times faster), and cargo's
+canonical `target/PROFILE/' copy beats its `target/PROFILE/deps/'
+hardlink of the same file (identical content and mtime, so nothing
+else distinguishes them). Age breaks remaining ties in
+`shex-validate--module-candidates', not here."
+  (+ (or (seq-position shex-validate--module-basenames
+                       (file-name-nondirectory path))
+         99)
+     (if (string-match-p "/release/" path) 0 10)
+     (if (string-match-p "/deps/" path) 1 0)))
+
+(defun shex-validate--module-candidates ()
+  "Every built `emacs-rudof' module the cheap searches can find on this
+machine, most preferable first (see
+`shex-validate--module-preference'; ties broken newest-first):
+`shex-validate-module-install-directory' (where a previous
+`shex-validate-setup' may have copied one), then `ROOT/rudof' /
+`ROOT/*/rudof' checkout globs under
+`shex-validate--module-search-roots', then the system file indexer
+\(`shex-validate--system-locate')."
+  (let (hits)
+    (dolist (name shex-validate--module-basenames)
+      (push (expand-file-name name shex-validate-module-install-directory)
+            hits)
+      (dolist (root (shex-validate--module-search-roots))
+        (dolist (pattern (list (concat root "/rudof/target/*/" name)
+                               (concat root "/*/rudof/target/*/" name)))
+          (setq hits (nconc (file-expand-wildcards pattern) hits))))
+      (dolist (hit (shex-validate--system-locate name))
+        (when (equal (file-name-nondirectory hit) name)
+          (push hit hits))))
+    (sort (seq-filter #'file-exists-p
+                      (delete-dups (mapcar #'expand-file-name hits)))
+          (lambda (a b)
+            (let ((pa (shex-validate--module-preference a))
+                  (pb (shex-validate--module-preference b)))
+              (if (/= pa pb)
+                  (< pa pb)
+                (time-less-p
+                 (file-attribute-modification-time (file-attributes b))
+                 (file-attribute-modification-time (file-attributes a)))))))))
+
+(defun shex-validate--rudof-checkout-p (dir)
+  "Non-nil if DIR is a rudof checkout that can build the module this
+package needs -- tested by the presence of the `emacs-rudof' crate's
+own `Cargo.toml' (a plain `Cargo.toml' alone would also match any
+other Rust project; the crate manifest is what proves `cargo build -p
+emacs-rudof' has something to build), at any of the locations the
+crate has lived at (`bindings/emacs/' currently; `emacs-rudof/' and
+pre-rename `rudof_emacs/' at the top level historically)."
+  (seq-some (lambda (manifest)
+              (file-exists-p (expand-file-name manifest dir)))
+            '("bindings/emacs/Cargo.toml"
+              "emacs-rudof/Cargo.toml"
+              "rudof_emacs/Cargo.toml")))
+
+(defun shex-validate--setup-built-module (checkout)
+  "The most preferable already-built module under CHECKOUT's `target/'
+directory (release over debug, current crate name over pre-rename --
+`shex-validate--module-preference'), or nil if none is built yet."
+  (seq-find #'file-exists-p
+            (mapcan (lambda (profile)
+                      (mapcar (lambda (name)
+                                (expand-file-name
+                                 (concat "target/" profile "/" name) checkout))
+                              shex-validate--module-basenames))
+                    '("release" "debug"))))
+
+(defun shex-validate--setup-retry (why)
+  "Offer to restart `shex-validate-setup' (re-picking the module file or
+directory) because of WHY, or abort with a `user-error'. Always
+returns nil: if the user re-picks, the recursive `shex-validate-setup'
+run finishes the whole job itself before this returns, so callers
+should treat nil as \"stop, nothing left for this run to do\"."
+  (if (y-or-n-p (format "%s.  Pick a different file/directory? " why))
+      (progn (shex-validate-setup) nil)
+    (user-error "shex-validate setup aborted: %s" why)))
+
+(defun shex-validate--setup-subprocess-buffer ()
+  "`shex-validate--setup-buffer-name's buffer, created/displayed and
+with point at the end, ready for `git clone'/`cargo build' output to
+append to whatever earlier setup output it already holds."
+  (let ((buffer (get-buffer-create shex-validate--setup-buffer-name)))
+    (with-current-buffer buffer (goto-char (point-max)))
+    (display-buffer buffer)
+    buffer))
+
+(defun shex-validate--setup-clone (dir)
+  "Confirm, then clone `shex-validate--rudof-clone-url' into DIR/rudof
+-- via `git', or `gh' if there's no git, or by asking the user to
+clone it themselves if there's neither -- and return the verified
+checkout directory. Declining the confirmation, or the directory
+still not being a rudof checkout afterward, goes through
+`shex-validate--setup-retry' (re-pick or abort) and returns nil."
+  (let ((checkout (expand-file-name "rudof" dir)))
+    (if (not (y-or-n-p (format "Clone %s into %s? "
+                               shex-validate--rudof-clone-url checkout)))
+        (shex-validate--setup-retry
+         (format "%s isn't a rudof checkout and you declined cloning one" dir))
+      (let ((buffer (shex-validate--setup-subprocess-buffer)))
+        (cond
+         ((executable-find "git")
+          (message "shex-validate: cloning rudof into %s..." checkout)
+          (call-process "git" nil buffer t
+                        "clone" shex-validate--rudof-clone-url checkout))
+         ((executable-find "gh")
+          (message "shex-validate: cloning rudof into %s..." checkout)
+          (call-process "gh" nil buffer t
+                        "repo" "clone" "rudof-project/rudof" checkout))
+         (t
+          (read-string
+           (format "Neither `git' nor `gh' found.  Clone %s into %s yourself, then press RET: "
+                   shex-validate--rudof-clone-url checkout)))))
+      (if (shex-validate--rudof-checkout-p checkout)
+          checkout
+        (shex-validate--setup-retry
+         (format "%s still isn't a rudof checkout (no emacs-rudof crate manifest)"
+                 checkout))))))
+
+(defun shex-validate--setup-checkout-newer-p (checkout built)
+  "Non-nil if the rudof checkout CHECKOUT's latest commit postdates the
+BUILT module file -- the \"you pulled/committed since the last `cargo
+build'\" signal `shex-validate--setup-build' uses to offer a rebuild.
+Only commits count: uncommitted source edits aren't seen. No `git',
+or CHECKOUT not being a git checkout at all (a release tarball, say),
+counts as nil -- assume the build is current rather than pestering
+about a staleness this can't actually detect."
+  (when-let* (((executable-find "git"))
+              (lines (ignore-errors
+                       (process-lines "git" "-C" checkout "log" "-1" "--format=%ct")))
+              (commit-time (string-to-number (car lines))))
+    (time-less-p (file-attribute-modification-time (file-attributes built))
+                 commit-time)))
+
+(defun shex-validate--setup-build (checkout)
+  "Get a built module out of the rudof checkout CHECKOUT and hand it to
+`shex-validate--setup-finish' -- building first
+\(`shex-validate--setup-run-build') when there's no build yet, or when
+the user wants a fresh one because CHECKOUT has commits newer than the
+existing build (`shex-validate--setup-checkout-newer-p' -- so \"I
+pulled rudof, now rebuild\" is just re-running `shex-validate-setup'
+and picking the same checkout). Declining the *initial* build
+re-picks/aborts (`shex-validate--setup-retry', there's nothing to fall
+back on); declining a *re*-build just keeps the existing module."
+  (let ((built (shex-validate--setup-built-module checkout)))
+    (cond
+     ((not built)
+      (if (y-or-n-p (format "Run `cargo build --release -p emacs-rudof' in %s (in the background; takes a few minutes)? "
+                            checkout))
+          (shex-validate--setup-run-build checkout)
+        (shex-validate--setup-retry "you declined building the module")))
+     ((and (shex-validate--setup-checkout-newer-p checkout built)
+           (y-or-n-p (format "%s has commits newer than %s (built %s).  Rebuild? "
+                             checkout (file-name-nondirectory built)
+                             (format-time-string
+                              "%Y-%m-%d %H:%M"
+                              (file-attribute-modification-time
+                               (file-attributes built))))))
+      (shex-validate--setup-run-build checkout))
+     (t (shex-validate--setup-finish built)))))
+
+(defun shex-validate--setup-run-build (checkout)
+  "Build the emacs-rudof module in CHECKOUT (the caller has already
+confirmed the user wants a build): *asynchronously* via `cargo build
+--release -p emacs-rudof' (a rudof build takes minutes -- freezing
+Emacs on a synchronous one would be worse than the problem being
+solved), whose process sentinel then finishes the setup when it
+succeeds. If there's no `cargo', asks the user to build it themselves
+and verifies afterward, re-picking/aborting via
+`shex-validate--setup-retry' if the module still isn't there."
+  (if (not (executable-find "cargo"))
+      (progn
+        (read-string
+         (format "No `cargo' found.  Build the module yourself (cd %s && cargo build --release -p emacs-rudof), then press RET: "
+                 checkout))
+        (if-let* ((built (shex-validate--setup-built-module checkout)))
+            (shex-validate--setup-finish built)
+          (shex-validate--setup-retry
+           (format "still no built module under %s"
+                   (expand-file-name "target/" checkout)))))
+    (let ((buffer (shex-validate--setup-subprocess-buffer))
+          (default-directory checkout))
+      (make-process
+       :name "shex-validate-rudof-build"
+       :buffer buffer
+       :command '("cargo" "build" "--release" "-p" "emacs-rudof")
+       :sentinel
+       (lambda (process _event)
+         (when (memq (process-status process) '(exit signal))
+           (if (and (eq (process-status process) 'exit)
+                    (zerop (process-exit-status process)))
+               (if-let* ((built (shex-validate--setup-built-module checkout)))
+                   ;; The remaining setup questions (copy? save?)
+                   ;; interrupt whatever the user is doing when the
+                   ;; build happens to finish -- tolerable for the
+                   ;; one-shot tail of a wizard they launched, and
+                   ;; `C-g' here just means "finish later by hand".
+                   (condition-case nil
+                       (shex-validate--setup-finish built)
+                     (quit (message "shex-validate: built %s -- re-run M-x shex-validate-setup to finish pointing at it"
+                                    built)))
+                 (message "shex-validate: build succeeded but no module found under %s"
+                          (expand-file-name "target/" checkout)))
+             (message "shex-validate: emacs-rudof build failed -- see %s, then re-run M-x shex-validate-setup"
+                      shex-validate--setup-buffer-name)))))
+      (message "shex-validate: building emacs-rudof in the background -- see %s"
+               shex-validate--setup-buffer-name))))
+
+(defun shex-validate--setup-finish (module)
+  "Point `shex-validate-rudof-module-path' at the built MODULE: offer to
+copy it into `shex-validate-module-install-directory' first (using it
+in place otherwise), then set the option -- via
+`customize-save-variable' (persisted for future sessions) or
+`customize-set-variable' (this session only), the user's choice."
+  (setq module (expand-file-name module))
+  (when (y-or-n-p (format "Copy %s into %s (otherwise it's used in place)? "
+                          (file-name-nondirectory module)
+                          shex-validate-module-install-directory))
+    (make-directory shex-validate-module-install-directory t)
+    (let ((dest (expand-file-name (file-name-nondirectory module)
+                                  shex-validate-module-install-directory)))
+      (copy-file module dest t)
+      (setq module dest)))
+  (if (y-or-n-p "Save `shex-validate-rudof-module-path' for future sessions too? ")
+      (customize-save-variable 'shex-validate-rudof-module-path module)
+    (customize-set-variable 'shex-validate-rudof-module-path module))
+  (message "shex-validate: using %s%s" module
+           ;; A dynamic module can't be unloaded, so a path picked
+           ;; after one was already loaded only matters on restart.
+           (if shex-validate--fn-prefix
+               " (the already-loaded module stays in effect until Emacs restarts)"
+             "")))
+
+;;;###autoload
+(defun shex-validate-setup ()
+  "Find -- or clone and build -- the `emacs-rudof' dynamic module and
+point `shex-validate-rudof-module-path' at it.
+
+Offers the best already-built module it can find on this machine
+\(`shex-validate--module-candidates') as the default; navigating
+elsewhere instead can pick either a built module file directly, or a
+directory -- one holding a rudof checkout (recognized by the
+`emacs-rudof' crate's manifest, `shex-validate--rudof-checkout-p',
+directly or as an immediate `rudof/' subdirectory), or one to clone
+`shex-validate--rudof-clone-url' into
+\(`shex-validate--setup-clone'). Builds the module in the background
+if the checkout hasn't already (`shex-validate--setup-build'), then
+offers to copy it into `shex-validate-module-install-directory' and to
+save the option for future sessions (`shex-validate--setup-finish').
+
+Also entered automatically by `shex-validate--ensure-module' when
+validation is first attempted with no module configured or findable --
+but only from inside an explicit user command, never from a flymake
+idle re-check."
+  (interactive)
+  (let* ((found (car (shex-validate--module-candidates)))
+         (choice (expand-file-name
+                  (read-file-name
+                   (format "emacs-rudof module%s, or a directory to clone/build rudof in: "
+                           (if found (format " (default %s)" found) ""))
+                   (and found (file-name-directory found))
+                   found t))))
+    ;; A directory can be target/release itself, a checkout, a
+    ;; checkout's parent, or an empty spot to clone into.
+    (let ((direct (and (file-directory-p choice)
+                       (seq-find #'file-exists-p
+                                 (mapcar (lambda (name)
+                                           (expand-file-name name choice))
+                                         shex-validate--module-basenames)))))
+      (cond
+       ((not (file-directory-p choice))
+        (shex-validate--setup-finish choice))
+       (direct
+        (shex-validate--setup-finish direct))
+       ((shex-validate--rudof-checkout-p choice)
+        (shex-validate--setup-build choice))
+       ((shex-validate--rudof-checkout-p (expand-file-name "rudof" choice))
+        (shex-validate--setup-build (expand-file-name "rudof" choice)))
+       (t
+        (when-let* ((checkout (shex-validate--setup-clone choice)))
+          (shex-validate--setup-build checkout)))))))
+
 (defun shex-validate--ensure-module ()
   "Load the `emacs-rudof' dynamic module (or a pre-rename
 `rudof_emacs' one) if it isn't already, and resolve
-`shex-validate--fn-prefix' from whichever it turns out to be."
+`shex-validate--fn-prefix' from whichever it turns out to be.
+
+When `shex-validate-rudof-module-path' is nil -- or names a file that
+no longer exists -- first tries to find a built module unattended
+\(`shex-validate--module-candidates'); failing that, enters the
+interactive `shex-validate-setup' wizard, but only when running inside
+an explicit user command (`this-command' non-nil) -- from a flymake
+idle-timer re-check (or in batch), it signals a `user-error' naming
+the wizard instead of prompting."
   (unless shex-validate--fn-prefix
     (unless (or (fboundp 'rudof-new) (fboundp 'rudof-emacs-new))
+      (when (and shex-validate-rudof-module-path
+                 (not (file-exists-p
+                       (expand-file-name shex-validate-rudof-module-path))))
+        (message "shex-validate: configured module %s doesn't exist; looking for another"
+                 shex-validate-rudof-module-path)
+        (setq shex-validate-rudof-module-path nil))
       (unless shex-validate-rudof-module-path
-        (user-error "Set `shex-validate-rudof-module-path' to the built emacs-rudof module first"))
+        (if-let* ((found (car (shex-validate--module-candidates))))
+            (progn
+              (setq shex-validate-rudof-module-path found)
+              (message "shex-validate: using %s (M-x shex-validate-setup to change or save this)"
+                       found))
+          (if (and this-command (not noninteractive))
+              (shex-validate-setup)
+            (user-error "No emacs-rudof module found -- run M-x shex-validate-setup"))))
+      (unless shex-validate-rudof-module-path
+        ;; `shex-validate-setup' returned without setting the path:
+        ;; it kicked off a background clone/build.
+        (user-error "emacs-rudof is still being set up (background build?) -- retry once it reports success"))
       (module-load
        (shex-validate--upgrade-module-path
         (expand-file-name shex-validate-rudof-module-path))))
