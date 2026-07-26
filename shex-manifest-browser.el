@@ -115,6 +115,17 @@ resolved relative to MANIFEST-PATH's own directory -- the RFC 3986
   "Maps (KIND . LABEL) to the live buffer `shex-manifest-browser--content-buffer'
 last returned for it.")
 
+(defun shex-manifest-browser--owned-p (buffer)
+  "Non-nil if BUFFER is one of the reusable content buffers this
+browser machinery itself created (`shex-manifest-browser--owned-buffers')
+-- as opposed to a file-visiting buffer belonging to the operator."
+  (catch 'shex-manifest-browser--owned-p
+    (maphash (lambda (_key owned)
+               (when (eq owned buffer)
+                 (throw 'shex-manifest-browser--owned-p t)))
+             shex-manifest-browser--owned-buffers)
+    nil))
+
 (defun shex-manifest-browser--buffer-name (kind label)
   (format "*%s%s*" (symbol-name kind) (if label (concat ": " label) "")))
 
@@ -484,6 +495,19 @@ but still not counted on to the exclusion of the old fallback)."
 (put 'shex-manifest-browser--manifest-file 'permanent-local t)
 (defvar-local shex-manifest-browser--manifest-dir nil)
 (put 'shex-manifest-browser--manifest-dir 'permanent-local t)
+
+(defvar-local shex-manifest-browser--loaded-buffers nil
+  "Buffers this browser's entry runs have materialized -- the
+schema/data/queryMap/ShapeMap content buffers, result tables, and any
+schemaURL/dataURL file buffers the runs themselves opened (never a
+file buffer that was already open before the run -- that's the
+operator's, not ours to clean up).  `shex-manifest-browser-quit'
+offers to save the modified ones and kills the lot; recorded at the
+end of every `shex-manifest-browser--run'.  Buffer-local to the
+browser buffer, `permanent-local' so it survives the
+`shex-manifest-browser-toggle-display' major-mode round trip like the
+rest of this browser's state.")
+(put 'shex-manifest-browser--loaded-buffers 'permanent-local t)
 (defvar-local shex-manifest-browser--entries nil)
 (put 'shex-manifest-browser--entries 'permanent-local t)
 (defvar-local shex-manifest-browser--results nil
@@ -761,6 +785,7 @@ buffer save back into the manifest file itself (see
 `shex-manifest-browser--enable-save-back')."
   (let ((browser-buffer (current-buffer))
         (browser-window (selected-window))
+        (pre-run-buffers (buffer-list))
         (manifest-path (expand-file-name shex-manifest-browser--manifest-file
                                           shex-manifest-browser--manifest-dir)))
     (let* ((schema-buffer (shex-manifest-browser--schema-buffer entry manifest-path))
@@ -793,6 +818,27 @@ buffer save back into the manifest file itself (see
           (shex-manifest-browser--show-side-by-side browser-window schema-buffer data-buffer)
           (let ((shex-validate--suppress-after-check-hook t))
             (shex-validate-show-result-shapemap data-buffer)))))
+    ;; Record what this run materialized, for `shex-manifest-browser-
+    ;; quit' to clean up: this browser's own reusable content buffers
+    ;; (`shex-manifest-browser--owned-p' -- even when an earlier run
+    ;; created them), plus what the run itself brought into existence
+    ;; -- but of those, only result tables and file-visiting buffers
+    ;; (a freshly-visited schemaURL/dataURL): a whitelist, not
+    ;; everything new, since machinery buffers that happen to appear
+    ;; during a run (e.g. flymake's shared `*Flymake log*') aren't
+    ;; ours to kill.  A file buffer the operator already had open
+    ;; predates the run and stays theirs.
+    (with-current-buffer browser-buffer
+      (dolist (b (buffer-list))
+        (when (and (or (shex-manifest-browser--owned-p b)
+                       (and (not (memq b pre-run-buffers))
+                            (or (buffer-file-name b)
+                                (provided-mode-derived-p
+                                 (buffer-local-value 'major-mode b)
+                                 'shex-validate-results-mode))))
+                   (not (eq b browser-buffer))
+                   (not (memq b shex-manifest-browser--loaded-buffers)))
+          (push b shex-manifest-browser--loaded-buffers))))
     (gethash index shex-manifest-browser--results)))
 
 ;;; The browser buffer
@@ -1520,16 +1566,57 @@ on, and which key's line point was on in the YAML
 `shex-manifest-browser--show-table' lands on."
   (interactive)
   (if (derived-mode-p 'shex-manifest-browser-mode)
-      (shex-manifest-browser--show-yaml (tabulated-list-get-id)
-                                         (shex-manifest-browser--column-at-point))
+      (progn
+        (unless shex-manifest-browser--manifest-file
+          ;; The mode is on but nothing was ever loaded (e.g. it was
+          ;; enabled by hand in a buffer with no file) -- there's no
+          ;; YAML to toggle to.
+          (user-error "No manifest is loaded in this buffer -- see `shex-manifest-browser-open'"))
+        (shex-manifest-browser--show-yaml (tabulated-list-get-id)
+                                           (shex-manifest-browser--column-at-point)))
     (shex-manifest-browser--show-table (shex-manifest-browser--entry-index-at-point)
                                         (shex-manifest-browser--column-at-yaml-point))))
+
+(defun shex-manifest-browser-quit (&optional kill)
+  "Quit this manifest-browser window, cleaning up the buffers its entry
+runs loaded (`shex-manifest-browser--loaded-buffers': content buffers,
+result tables, and schemaURL/dataURL file buffers the runs themselves
+opened -- never a file buffer that was already open beforehand).
+
+Modified ones are offered for saving first, one `save-some-buffers'
+prompt each -- so the usual keys work: `y' saves (inline manifest
+content saves back into the manifest file itself, per
+`shex-manifest-browser--write-contents'), `C-r' views the buffer, `d'
+diffs it against what saving would overwrite.  Answering `n' ABANDONS
+that buffer's changes -- this quit is a cleanup, so declining the save
+means letting the changes go, not keeping the buffer around -- and
+`C-g' aborts the whole quit with every buffer still intact.
+
+Then quits the window `quit-window'-style: KILL (interactively, the
+prefix argument) kills the browser buffer itself too, instead of just
+burying it."
+  (interactive "P")
+  (let* ((deps (seq-filter #'buffer-live-p shex-manifest-browser--loaded-buffers))
+         (dirty (seq-filter #'buffer-modified-p deps)))
+    (when dirty
+      (save-some-buffers nil (lambda () (memq (current-buffer) dirty))))
+    (dolist (dep deps)
+      (when (buffer-live-p dep)
+        ;; Anything still modified here was offered above and
+        ;; declined; clear the flag so neither `shex-manifest-
+        ;; browser--kill-buffer-query' nor `kill-buffer' itself asks a
+        ;; second time.
+        (with-current-buffer dep (set-buffer-modified-p nil))
+        (kill-buffer dep)))
+    (setq shex-manifest-browser--loaded-buffers nil))
+  (quit-window kill))
 
 (defvar-keymap shex-manifest-browser-mode-map
   :parent tabulated-list-mode-map
   "RET" #'shex-manifest-browser-run-entry
   "a" #'shex-manifest-browser-run-all
   "m" #'shex-manifest-browser-columns-menu
+  "q" #'shex-manifest-browser-quit
   "C-c C-c" #'shex-manifest-browser-toggle-display)
 
 (define-derived-mode shex-manifest-browser-mode tabulated-list-mode "ShEx-Manifest"
@@ -1539,7 +1626,9 @@ on, and which key's line point was on in the YAML
 \(`revert-buffer', bound by `tabulated-list-mode' already) reparses the
 manifest file, discarding results; `m'
 \(`shex-manifest-browser-columns-menu') picks which columns are shown
-and their order; `C-c C-c'
+and their order; `q' (`shex-manifest-browser-quit') quits the window
+and cleans up the buffers entry runs loaded, offering to save any
+with unsaved edits; `C-c C-c'
 \(`shex-manifest-browser-toggle-display', `image-toggle-display'-style)
 switches to editing the manifest's raw YAML text directly (`C-c C-c'
 there switches back to this table).
@@ -1558,12 +1647,25 @@ resized -- see `shex-manifest-browser--set-column-widths'."
   (setq revert-buffer-function #'shex-manifest-browser-revert)
   (shex-manifest-browser--set-column-widths)
   (add-hook 'window-configuration-change-hook #'shex-manifest-browser--set-column-widths nil t)
-  (when (and (null shex-manifest-browser--entries) buffer-file-name)
-    (let ((path buffer-file-name))
-      (setq buffer-file-name nil)
-      (shex-manifest-browser--initialize path)
-      (tabulated-list-print)
-      (set-buffer-modified-p nil))))
+  (when (null shex-manifest-browser--entries)
+    (cond
+     (buffer-file-name
+      (let ((path buffer-file-name))
+        (setq buffer-file-name nil)
+        (shex-manifest-browser--initialize path)
+        (tabulated-list-print)
+        (set-buffer-modified-p nil)))
+     ;; `M-x shex-manifest-browser-mode' in a buffer with no file and
+     ;; no entries can't work -- most likely an *eww* buffer, which
+     ;; holds a *rendering* of a URL, not the manifest text itself
+     ;; (`browse-url'/`ffap' fetch into eww; they don't visit).  Say
+     ;; so, instead of showing a plausible-looking 0-row table.  Only
+     ;; for the direct interactive case: `shex-manifest-browser-open'
+     ;; and `shex-manifest-browser--show-table' legitimately enable
+     ;; this mode in a fresh/fileless buffer and initialize right
+     ;; after, and must not be tripped up.
+     ((eq this-command 'shex-manifest-browser-mode)
+      (user-error "Buffer visits no file to load a manifest from -- `C-x C-f' the manifest instead (with `url-handler-mode' on for http://...), or use `shex-manifest-browser-open'")))))
 
 ;;;###autoload
 (defun shex-manifest-browser-open (path)
