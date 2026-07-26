@@ -13,6 +13,18 @@
 
   (require 'package)
   (package-initialize)
+  ;; The recompile loop below runs in `git ls-files' (alphabetical)
+  ;; order, which is NOT dependency order: `shex-manifest-browser.el'
+  ;; and `shex-validate.el' sort before `shexc-shexj.el', so compiling
+  ;; them `require's shexc-shexj while its own `.elc' is still the
+  ;; not-yet-recompiled one -- and plain `load'/`require' prefers a
+  ;; stale `.elc' over its newer `.el', so the compiler checks those
+  ;; files' calls against last session's signatures ("called with 1
+  ;; argument, but accepts only 0" warnings after a signature gained
+  ;; an argument). `load-prefer-newer' makes every load pick
+  ;; whichever of `.el'/`.elc' is actually newer, so cross-file
+  ;; compilation always sees current definitions regardless of order.
+  (setq load-prefer-newer t)
   (let ((here (file-name-directory (or load-file-name buffer-file-name))))
     (add-to-list 'load-path here)
     ;; A relative path here is resolved against THIS file's own

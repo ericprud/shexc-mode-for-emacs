@@ -976,6 +976,15 @@ validation and redraws every row in place — edit `*data*` or
   with rudof's own error text, rather than `flymake` silently
   disabling the backend — so a syntax typo mid-edit in `*schema*`
   doesn't require manually re-enabling anything once it's fixed.
+- Relative IRIs resolve per RFC 3986's inheritance ladder: a buffer's
+  base is its own `BASE` directive if it declares one, else
+  `shex-validate-base-iri` if set (how `shex-manifest-browser` marks a
+  scratch buffer holding a manifest's *inline* `schema:`/`data:` text
+  as "located at" the manifest's own URI, matching shex-webapp), else
+  the visited file's URI (kept verbatim when it's already a URL, e.g.
+  a manifest opened over HTTP via `url-handler-mode`, so resolution
+  stays http:-based all the way down). ShapeMap node references then
+  inherit the data buffer's base; shape references, the schema's.
 
 ## rdf-core
 
@@ -1023,3 +1032,5 @@ Some hints to help contributers:
   script, not an ERT suite -- see [Packaging](#packaging) above for
   how `*-tests.el` files (ERT, `ert-deftest`) are named and excluded
   from the built package instead.
+- *rev'ing stable.melpa.org* -- `git tag v0.2.0 && git push --tags` (or
+  whatever version you're publishing).

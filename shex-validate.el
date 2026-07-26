@@ -599,12 +599,42 @@ the wizard instead of prompting."
            (t (error "Loaded %s but neither `rudof-new' nor `rudof-emacs-new' is bound"
                      shex-validate-rudof-module-path))))))
 
+(defvar-local shex-validate-base-iri nil
+  "Base IRI for this buffer's ShExC/Turtle/ShapeMap text, overriding
+the visited file's own location -- RFC 3986's \"base URI from the
+encapsulating entity\", for a buffer whose text was *extracted* from
+some other document rather than visited from a file of its own: e.g.
+`shex-manifest-browser' materializing a manifest entry's inline
+`schema:'/`data:' text into a scratch buffer sets this to the
+manifest's own URI, so the snippet's relative IRIs resolve exactly as
+they would in shex-webapp reading that same manifest.  nil (the
+default) means \"just use `buffer-file-name'\", and a buffer with
+neither has no base at all -- relative IRIs in it can't be resolved.
+Consulted by `shex-validate--buffer-base-iri'; a BASE directive *in*
+the buffer's own text still overrides either, downstream.")
+
+(defun shex-validate-file-base-iri (file)
+  "FILE (an Emacs file name) as a base IRI: FILE itself when it's
+already a URL (e.g. `url-handler-mode' visiting \"http://...\" --
+which is how a manifest loaded over HTTP yields http:-based, not
+file:-based, resolution all the way down), \"file://\" + FILE
+otherwise.  A Tramp remote name (\"/ssh:host:/path\") isn't a URL and
+gets the (admittedly odd) file:// spelling -- no better mapping
+exists, since the remote path isn't retrievable by anyone else's
+resolver anyway."
+  (if (string-match-p "\\`[A-Za-z][A-Za-z0-9+.-]*://" file)
+      file
+    (concat "file://" file)))
+
 (defun shex-validate--buffer-base-iri (buffer)
-  "A \"file://...\" URI for BUFFER's file, or nil if it has none --
-passed as ShExC/Turtle's BASE so relative IRIs (including ShExC
-`IMPORT') resolve the same way they would for that file on disk."
-  (let ((file (buffer-file-name buffer)))
-    (and file (concat "file://" file))))
+  "BUFFER's base IRI: `shex-validate-base-iri' if set there (text
+embedded in some other document -- see that variable), else a URI for
+BUFFER's own file (`shex-validate-file-base-iri'), else nil -- passed
+as ShExC/Turtle's BASE so relative IRIs (including ShExC `IMPORT')
+resolve the same way they would for that text at its real location."
+  (or (buffer-local-value 'shex-validate-base-iri buffer)
+      (let ((file (buffer-file-name buffer)))
+        (and file (shex-validate-file-base-iri file)))))
 
 (defun shex-validate--schema-shapemap-base-iri (schema-buffer)
   "The base IRI a ShapeMap's relative shape references should resolve
@@ -614,10 +644,16 @@ final `BASE <...>' directive if it declares one -- since that,
 not its file location, is then what `read-shex' actually resolved
 that schema's own relative shape labels against -- or
 `shex-validate--buffer-base-iri' otherwise, matching `read-shex''s
-default when SCHEMA-BUFFER declares no BASE of its own."
+default when SCHEMA-BUFFER declares no BASE of its own.  The
+directive scan is seeded with `shex-validate--buffer-base-iri' --
+matching the BASE `read-shex' itself got -- so a *relative* `BASE
+<...>' declaration resolves against SCHEMA-BUFFER's own location
+first, per RFC 3986, instead of surviving as a relative string."
   (or (with-current-buffer schema-buffer
         (ignore-errors
-          (shexc-shexj--ctx-base (shexc-shexj-buffer-directive-ctx))))
+          (shexc-shexj--ctx-base
+           (shexc-shexj-buffer-directive-ctx
+            (shex-validate--buffer-base-iri schema-buffer)))))
       (shex-validate--buffer-base-iri schema-buffer)))
 
 (defun shex-validate--data-shapemap-base-iri (data-buffer)
@@ -635,10 +671,15 @@ otherwise resolves against `emacs-rudof''s own hidden default
 \(the Emacs process's current directory) instead of matching how
 DATA-BUFFER's own identical `<#Alice>' reference actually resolved
 when `read-data' parsed it, so validation silently can't find that
-node in the data at all)."
+node in the data at all).  Seeded with
+`shex-validate--buffer-base-iri' for the same reason as
+`shex-validate--schema-shapemap-base-iri' -- a relative `BASE <...>'
+directive resolves against DATA-BUFFER's own location first."
   (or (with-current-buffer data-buffer
         (ignore-errors
-          (rdf-turtle--ctx-base (rdf-turtle-buffer-directive-ctx))))
+          (rdf-turtle--ctx-base
+           (rdf-turtle-buffer-directive-ctx
+            (shex-validate--buffer-base-iri data-buffer)))))
       (shex-validate--buffer-base-iri data-buffer)))
 
 ;;; Running a check
@@ -746,7 +787,13 @@ same underlying check."
   (with-current-buffer data-buffer
     (let ((quadruples (shex-validate--check))
           (positions (make-hash-table :test #'equal)))
-      (rdf-turtle-parse-buffer (rdf-store-create) positions)
+      ;; Seeding the same BASE `read-data' got keeps POSITIONS keyed
+      ;; by the same absolute IRIs the quadruples report their nodes
+      ;; in -- without it, a relative `<Obs1>' in a buffer with no
+      ;; BASE directive keys its position as "Obs1" while the
+      ;; quadruple says "file://.../Obs1", and they never match.
+      (rdf-turtle-parse-buffer (rdf-store-create) positions
+                               (shex-validate--buffer-base-iri data-buffer))
       (cons quadruples positions))))
 
 ;;; Diagnostics

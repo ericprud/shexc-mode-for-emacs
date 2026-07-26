@@ -93,8 +93,11 @@ order."
 (defun shex-manifest-browser--get (entry key)
   (cdr (assq key entry)))
 
-(defun shex-manifest-browser--resolve-path (manifest-dir path)
-  (expand-file-name path manifest-dir))
+(defun shex-manifest-browser--resolve-path (manifest-path path)
+  "PATH (a manifest's `schemaURL'/`dataURL'/`queryMapURL' value)
+resolved relative to MANIFEST-PATH's own directory -- the RFC 3986
+\"relative to the manifest's BASE\" step for by-reference content."
+  (expand-file-name path (file-name-directory manifest-path)))
 
 ;;; Buffer provisioning
 ;;
@@ -115,22 +118,30 @@ last returned for it.")
 (defun shex-manifest-browser--buffer-name (kind label)
   (format "*%s%s*" (symbol-name kind) (if label (concat ": " label) "")))
 
-(defun shex-manifest-browser--content-buffer (kind label content mode-fn manifest-dir)
+(defun shex-manifest-browser--content-buffer (kind label content mode-fn manifest-path)
   "Return a live buffer holding CONTENT, named from KIND (`schema'/
 `data'/`queryMap'/`shapemap') and LABEL (a string, or nil for a bare
 \"*KIND*\"), with MODE-FN (a major-mode function, or nil for
 `fundamental-mode') applied.  See this file's Commentary for the
 reuse/reap policy.
 
-MANIFEST-DIR becomes the buffer's own `default-directory' -- a
-freshly `generate-new-buffer'd buffer otherwise just inherits
-whatever buffer happened to be current when it was created (an
-Emacs-wide convention, not this mode's own doing), which for a
-reused/temp buffer with no file of its own is unpredictable and
-buffer-history-dependent, not the manifest's own location a relative
-path *within* CONTENT (e.g. a ShExC `IMPORT', or -- confirmed
-empirically -- a relative `shex-validate-rudof-module-path') would
-sensibly resolve against."
+MANIFEST-PATH (the manifest file CONTENT was inline in) anchors the
+buffer two ways.  Its directory becomes the buffer's own
+`default-directory' -- a freshly `generate-new-buffer'd buffer
+otherwise just inherits whatever buffer happened to be current when
+it was created (an Emacs-wide convention, not this mode's own doing),
+which for a reused/temp buffer with no file of its own is
+unpredictable and buffer-history-dependent, not the manifest's own
+location a relative path *within* CONTENT (e.g. a ShExC `IMPORT', or
+-- confirmed empirically -- a relative
+`shex-validate-rudof-module-path') would sensibly resolve against.
+And its URI becomes the buffer's `shex-validate-base-iri' -- inline
+content inherits the manifest's own BASE, per RFC 3986's
+\"encapsulating entity\" rule (matching shex-webapp, which resolves
+an inline snippet's relative IRIs against the manifest's URL), so
+e.g. a relative `<Obs1>' in inline data is a real, resolvable node
+even though the buffer visits no file; a BASE directive inside
+CONTENT still overrides it."
   (let* ((key (cons kind label))
          (existing (gethash key shex-manifest-browser--owned-buffers))
          (buffer (if (and existing (buffer-live-p existing) (not (buffer-modified-p existing)))
@@ -141,7 +152,8 @@ sensibly resolve against."
       (erase-buffer)
       (insert content)
       (goto-char (point-min))
-      (setq default-directory manifest-dir)
+      (setq default-directory (file-name-directory manifest-path))
+      (setq shex-validate-base-iri (shex-validate-file-base-iri manifest-path))
       (set-buffer-modified-p nil))
     (puthash key buffer shex-manifest-browser--owned-buffers)
     buffer))
@@ -154,41 +166,41 @@ sensibly resolve against."
       (turtle-ts-mode)
     (fundamental-mode)))
 
-(defun shex-manifest-browser--schema-buffer (entry manifest-dir)
+(defun shex-manifest-browser--schema-buffer (entry manifest-path)
   (let ((url (shex-manifest-browser--get entry 'schemaURL)))
     (if url
-        (find-file-noselect (shex-manifest-browser--resolve-path manifest-dir url))
+        (find-file-noselect (shex-manifest-browser--resolve-path manifest-path url))
       (shex-manifest-browser--content-buffer
        'schema (shex-manifest-browser--get entry 'schemaLabel)
        (or (shex-manifest-browser--get entry 'schema) "")
-       #'shex-manifest-browser--schema-mode manifest-dir))))
+       #'shex-manifest-browser--schema-mode manifest-path))))
 
-(defun shex-manifest-browser--data-buffer (entry manifest-dir)
+(defun shex-manifest-browser--data-buffer (entry manifest-path)
   (let ((url (shex-manifest-browser--get entry 'dataURL)))
     (if url
-        (find-file-noselect (shex-manifest-browser--resolve-path manifest-dir url))
+        (find-file-noselect (shex-manifest-browser--resolve-path manifest-path url))
       (shex-manifest-browser--content-buffer
        'data (shex-manifest-browser--get entry 'dataLabel)
        (or (shex-manifest-browser--get entry 'data) "")
-       #'shex-manifest-browser--data-mode manifest-dir))))
+       #'shex-manifest-browser--data-mode manifest-path))))
 
-(defun shex-manifest-browser--querymap-text (entry manifest-dir)
+(defun shex-manifest-browser--querymap-text (entry manifest-path)
   "The entry's raw queryMap text, from `queryMap' or `queryMapURL'."
   (let ((url (shex-manifest-browser--get entry 'queryMapURL)))
     (if url
         (with-temp-buffer
-          (insert-file-contents (shex-manifest-browser--resolve-path manifest-dir url))
+          (insert-file-contents (shex-manifest-browser--resolve-path manifest-path url))
           (buffer-string))
       (or (shex-manifest-browser--get entry 'queryMap) ""))))
 
-(defun shex-manifest-browser--querymap-buffer (entry manifest-dir)
+(defun shex-manifest-browser--querymap-buffer (entry manifest-path)
   "A buffer holding ENTRY's raw (unresolved) queryMap text, for the
 operator to inspect -- not what's actually linked for validation, see
 `shex-manifest-browser--resolve-querymap' for that."
   (shex-manifest-browser--content-buffer
    'queryMap (shex-manifest-browser--get entry 'dataLabel)
-   (shex-manifest-browser--querymap-text entry manifest-dir)
-   nil manifest-dir))
+   (shex-manifest-browser--querymap-text entry manifest-path)
+   nil manifest-path))
 
 ;;; queryMap resolution: `{FOCUS ...}'/`{... FOCUS}' patterns, `!' negation
 ;;
@@ -247,9 +259,15 @@ itself doesn't parse this, so it never reaches `read-shapemap')."
   "DATA-BUFFER's `rdf-turtle--ctx' (BASE/PREFIX only) -- the same table
 `rdf-turtle-parse-buffer' resolved DATA-BUFFER's own triples against,
 for resolving a `{...}' pattern's raw predicate/object tokens the same
-way."
+way.  Seeded with DATA-BUFFER's own base
+\(`shex-validate--buffer-base-iri' -- its manifest's URI for inline
+content, its file otherwise), matching the seed
+`shex-manifest-browser--resolve-pattern' gives its store parse of the
+same buffer: a relative fixed token and a relative subject/object in
+the data must resolve to the *same* absolute IRI or they never match."
   (with-current-buffer data-buffer
-    (rdf-turtle-buffer-directive-ctx)))
+    (rdf-turtle-buffer-directive-ctx
+     (shex-validate--buffer-base-iri data-buffer))))
 
 (defun shex-manifest-browser--resolve-token (token ctx)
   "Resolve one `{...}' triplet-pattern TOKEN: `FOCUS' -> the symbol
@@ -303,7 +321,9 @@ resolved value, one per match."
                (subj-term (unless (eq focus-pos 'subject) (shex-manifest-browser--resolve-token subj ctx)))
                (pred-term (shex-manifest-browser--resolve-token pred ctx))
                (obj-term (unless (eq focus-pos 'object) (shex-manifest-browser--resolve-token obj ctx)))
-               (store (with-current-buffer data-buffer (rdf-turtle-parse-buffer)))
+               (store (with-current-buffer data-buffer
+                        (rdf-turtle-parse-buffer
+                         nil nil (shex-validate--buffer-base-iri data-buffer))))
                (matches (rdf-model-dataset-match store subj-term pred-term obj-term)))
           (mapcar (lambda (q)
                     (shex-manifest-browser--term-lex
@@ -369,8 +389,10 @@ resolves exactly the way it does (see
    ((and schema-buffer (buffer-live-p schema-buffer)
          (string-prefix-p "<" shape-text) (string-suffix-p ">" shape-text))
     (with-current-buffer schema-buffer
-      (shexc-shexj--resolve-iri (shexc-shexj-buffer-directive-ctx)
-                                 (substring shape-text 1 (1- (length shape-text))))))
+      (shexc-shexj--resolve-iri
+       (shexc-shexj-buffer-directive-ctx
+        (shex-validate--buffer-base-iri schema-buffer))
+       (substring shape-text 1 (1- (length shape-text))))))
    (t shape-text)))
 
 (defun shex-manifest-browser--resolve-node-text (data-buffer node-text)
@@ -387,8 +409,18 @@ this one isn't a guess).  Mirrors `shex-manifest-browser--resolve-
 shape-text' for the NODE side of a `shex-manifest-browser--pass-p'
 quadruple match.  NODE-TEXT unchanged for a `_:label' blank node
 \(never relative to any BASE) or when DATA-BUFFER isn't live."
-  (if (and data-buffer (buffer-live-p data-buffer) (not (string-prefix-p "_:" node-text)))
-      (url-expand-file-name node-text (shex-validate--data-shapemap-base-iri data-buffer))
+  (if-let* (((and data-buffer (buffer-live-p data-buffer)
+                  (not (string-prefix-p "_:" node-text))))
+            ;; Can be nil (a buffer with no file, no manifest to
+            ;; inherit from, and no BASE directive) -- and
+            ;; `url-expand-file-name' with a nil base *errors* on a
+            ;; relative reference rather than passing it through, so
+            ;; fall back to NODE-TEXT unresolved (`shex-manifest-
+            ;; browser--pass-p''s tier-3 raw-text match) like every
+            ;; other resolver here does, instead of taking the whole
+            ;; check down.
+            (base (shex-validate--data-shapemap-base-iri data-buffer)))
+      (url-expand-file-name node-text base)
     node-text))
 
 (defun shex-manifest-browser--pass-p (entry assocs quadruples schema-buffer data-buffer)
@@ -663,7 +695,10 @@ buffer being checked, which wouldn't fire from a DATA-only edit)."
                  (querymap-text (if (buffer-live-p querymap-buffer)
                                      (with-current-buffer querymap-buffer (buffer-string))
                                    (shex-manifest-browser--querymap-text
-                                    entry shex-manifest-browser--manifest-dir)))
+                                    entry
+                                    (expand-file-name
+                                     shex-manifest-browser--manifest-file
+                                     shex-manifest-browser--manifest-dir))))
                  (assocs (shex-manifest-browser--resolve-querymap querymap-text data-buffer)))
             (puthash index (shex-manifest-browser--pass-p entry assocs quadruples schema-buffer data-buffer)
                      shex-manifest-browser--results)
@@ -726,12 +761,11 @@ buffer save back into the manifest file itself (see
 `shex-manifest-browser--enable-save-back')."
   (let ((browser-buffer (current-buffer))
         (browser-window (selected-window))
-        (manifest-dir shex-manifest-browser--manifest-dir)
         (manifest-path (expand-file-name shex-manifest-browser--manifest-file
                                           shex-manifest-browser--manifest-dir)))
-    (let* ((schema-buffer (shex-manifest-browser--schema-buffer entry manifest-dir))
-           (data-buffer (shex-manifest-browser--data-buffer entry manifest-dir))
-           (querymap-buffer (shex-manifest-browser--querymap-buffer entry manifest-dir))
+    (let* ((schema-buffer (shex-manifest-browser--schema-buffer entry manifest-path))
+           (data-buffer (shex-manifest-browser--data-buffer entry manifest-path))
+           (querymap-buffer (shex-manifest-browser--querymap-buffer entry manifest-path))
            (querymap-text (with-current-buffer querymap-buffer (buffer-string))))
       (unless (shex-manifest-browser--get entry 'schemaURL)
         (shex-manifest-browser--enable-save-back schema-buffer manifest-path index 'schema))
@@ -742,7 +776,7 @@ buffer save back into the manifest file itself (see
       (let* ((assocs (shex-manifest-browser--resolve-querymap querymap-text data-buffer))
              (shapemap-buffer (shex-manifest-browser--content-buffer
                                'shapemap (shex-manifest-browser--get entry 'dataLabel)
-                               (shex-manifest-browser--shapemap-text assocs) nil manifest-dir)))
+                               (shex-manifest-browser--shapemap-text assocs) nil manifest-path)))
         (with-current-buffer data-buffer
           (setq-local shex-validate--rudof nil)
           (setq-local shex-validate--schema-tick nil)

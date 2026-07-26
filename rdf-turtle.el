@@ -350,7 +350,7 @@ lists mint fresh blank nodes and emit quads about them)."
 
 ;;; Public API
 
-(defun rdf-turtle-parse-buffer (&optional store positions)
+(defun rdf-turtle-parse-buffer (&optional store positions base)
   "Parse the current buffer's Turtle content into STORE (a new `rdf-store'
 if nil) and return it.
 
@@ -361,8 +361,17 @@ buffer (so a caller validating *this* buffer can map a ShEx validation
 result's node string back to where it's actually asserted) -- meaningless
 for any buffer other than the one actually being parsed, so unlike STORE
 this is never useful from `rdf-turtle-parse-string'/`-file', which parse
-inside a throwaway `with-temp-buffer'."
-  (let ((ctx (rdf-turtle--ctx-create :store (or store (rdf-store-create)) :positions positions)))
+inside a throwaway `with-temp-buffer'.
+
+BASE, if non-nil, is the base IRI in effect *before* the buffer's own
+text -- RFC 3986's \"base URI from the encapsulating entity\" (the
+document's own retrieval URI, or the manifest a snippet was embedded
+in): relative IRIs resolve against it, and a `BASE <...>' directive in
+the text overrides it from that point on (itself resolved against it
+first, if relative).  With BASE nil (the historical behavior),
+relative IRIs stay relative until some directive says otherwise."
+  (let ((ctx (rdf-turtle--ctx-create :store (or store (rdf-store-create)) :positions positions
+                                     :base base)))
     (treesit-parser-create 'turtle)
     (rdf-turtle--walk-document ctx (treesit-buffer-root-node))
     (rdf-turtle--ctx-store ctx)))
@@ -380,7 +389,7 @@ inside a throwaway `with-temp-buffer'."
     (rdf-turtle-parse-buffer store)))
 
 ;;;###autoload
-(defun rdf-turtle-buffer-directive-ctx ()
+(defun rdf-turtle-buffer-directive-ctx (&optional base)
   "A `rdf-turtle--ctx' reflecting every BASE/PREFIX declaration in the
 current buffer's Turtle text, applied in document order exactly as
 `rdf-turtle-parse-buffer' would -- i.e. the BASE/PREFIX table active by
@@ -390,8 +399,11 @@ resolve that same buffer's own triples, without parsing the whole
 buffer into a store (e.g. `shex-validate--data-shapemap-base-iri',
 resolving a ShapeMap's relative node references the same way
 `read-data' resolved that data buffer's own relative subject/object
-IRIs -- mirroring `shexc-shexj-buffer-directive-ctx' for schemas)."
-  (let ((ctx (rdf-turtle--ctx-create)))
+IRIs -- mirroring `shexc-shexj-buffer-directive-ctx' for schemas).
+BASE seeds the context exactly as `rdf-turtle-parse-buffer''s own
+BASE argument does -- pass the same value here as there, or the two
+resolve the same buffer's IRIs differently."
+  (let ((ctx (rdf-turtle--ctx-create :base base)))
     (treesit-parser-create 'turtle)
     (dolist (statement (rdf-turtle--children-of-types (treesit-buffer-root-node 'turtle) '("statement")))
       (let ((child (treesit-node-child statement 0 t)))

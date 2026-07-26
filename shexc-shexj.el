@@ -937,15 +937,20 @@ built this way.")
     (advice-add fn :around #'shexc-shexj--position-tracking-advice)))
 
 ;;;###autoload
-(defun shexc-shexj-buffer-directive-ctx ()
+(defun shexc-shexj-buffer-directive-ctx (&optional base)
   "A `shexc-shexj--ctx' reflecting every BASE/PREFIX declaration in the
 current buffer's `shex_doc', applied in document order exactly as
 `shexc-shexj-compile-buffer' would -- i.e. the BASE/PREFIX table active
 by the *end* of the buffer.  For callers that need to resolve a label/
 IRI the same way the compiler would (e.g. to compare two shape
 references for semantic, not just lexical, equality) without
-compiling the whole buffer."
-  (let ((ctx (shexc-shexj--make-ctx)))
+compiling the whole buffer.  BASE, if non-nil, seeds the context as
+the base IRI in effect *before* the buffer's own text -- RFC 3986's
+\"base URI from the encapsulating entity\" (the schema's retrieval
+URI, or the manifest an inline schema was embedded in); a `BASE
+<...>' declaration in the text overrides it (itself resolved against
+it first, if relative)."
+  (let ((ctx (shexc-shexj--make-ctx :base base)))
     (dolist (c (treesit-node-children (treesit-buffer-root-node 'shexc) t))
       (pcase (treesit-node-type c)
         ("base_decl" (shexc-shexj--apply-base ctx c))
