@@ -221,8 +221,11 @@ unescaped (see `shexc-ts-mode-convert--unescape-content')."
                    ;; Point naturally ends up right *after* the closing
                    ;; `*/' after inserting a fresh fence -- check one
                    ;; character back too, rather than requiring the
-                   ;; caller to know to reposition first.
-                   (shexc-ts-mode-convert--comment-node-at (1- pos))))
+                   ;; caller to know to reposition first.  Not at
+                   ;; `point-min' though: `treesit-node-at' rejects
+                   ;; position 0 with args-out-of-range.
+                   (and (> pos (point-min))
+                        (shexc-ts-mode-convert--comment-node-at (1- pos)))))
          (text (and node (treesit-node-text node t))))
     (when (and text (string-match shexc-ts-mode-convert--fence-re text))
       (list (match-string 1 text) (match-string 2 text)

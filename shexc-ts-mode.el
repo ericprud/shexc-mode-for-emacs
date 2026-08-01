@@ -1688,9 +1688,15 @@ expression element at point."
                        t)))
     (unless group
       (user-error "No triple expression to wrap here"))
+    ;; Recognize elements by node type, not `treesit-node-field-name' --
+    ;; on Emacs 29 that reports a field for only the group's first child
+    ;; (see `shexc-shexj--compile-unary-triple-expr-list'), which made
+    ;; wrapping any element but the first fail with "No triple
+    ;; expression to wrap here".
     (let ((elements (seq-filter
                      (lambda (c)
-                       (and (equal (treesit-node-field-name c) "element")
+                       (and (member (treesit-node-type c)
+                                    '("triple_constraint" "bracketed_triple_expr" "include"))
                             (< (treesit-node-start c) end)
                             (> (treesit-node-end c) beg)))
                      (treesit-node-children group))))
@@ -2043,9 +2049,14 @@ as `:note's for orientation, one per duplicated `triple_constraint'."
                      (treesit-buffer-root-node 'shexc)
                      '((group_triple_expr) @g) nil nil t))
       (let ((by-predicate (make-hash-table :test #'equal)))
+        ;; No `treesit-node-field-name' check: on Emacs 29 only the
+        ;; group's first child reports a field (see `shexc-shexj--
+        ;; compile-unary-triple-expr-list'), so requiring "element"
+        ;; meant at most one constraint per group was ever counted and
+        ;; a duplicate could never be detected.  The type check alone
+        ;; identifies the elements.
         (dolist (element (treesit-node-children group))
-          (when (and (equal (treesit-node-field-name element) "element")
-                     (string= (treesit-node-type element) "triple_constraint"))
+          (when (string= (treesit-node-type element) "triple_constraint")
             (when-let* ((pred (treesit-node-child-by-field-name element "predicate")))
               (push element (gethash (treesit-node-text pred t) by-predicate)))))
         (maphash

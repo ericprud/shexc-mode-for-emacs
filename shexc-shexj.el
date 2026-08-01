@@ -448,25 +448,37 @@ Returns ((:pattern . body) (:flags . flags)?)."
 (defun shexc-shexj--node-constraint-from-atom (ctx atom-node)
   "Gather every node_constraint-contributing child of ATOM-NODE (a
 shape_atom/inline_shape_atom) into one merged NodeConstraint plist, or
-nil if ATOM-NODE carries no node-constraint pieces at all."
+nil if ATOM-NODE carries no node-constraint pieces at all.
+
+Dispatches on each node_constraint's *children's node types*, never on
+`treesit-node-field-name': Emacs 29's implementation of that function
+indexes tree-sitter's field lookup with a named-child index where an
+all-children index is expected (fixed in Emacs 30), so with this
+grammar it reports nil/wrong fields -- confirmed empirically: a
+`values' node_constraint reported field \"datatype\" (crashing
+`shexc-shexj--iri-node-text' on the `[') and a `node_kind' one
+reported \"constraint\" (silently dropping the whole NodeConstraint)."
   (let (acc (any nil))
     (dolist (c (shexc-shexj--named-children atom-node))
       (pcase (treesit-node-type c)
         ("node_constraint"
          (setq any t)
-         (let ((field (treesit-node-field-name c)))
-           (pcase field
-             ("datatype" (setq acc (plist-put acc :datatype (shexc-shexj--iri-node-text ctx (treesit-node-child c 0)))))
-             ("values" (setq acc (plist-put acc :values (shexc-shexj--compile-values ctx c))))
-             ("node_kind"
-              (setq acc (plist-put acc :nodeKind
-                                    (pcase (treesit-node-type (treesit-node-child c 0))
-                                      ("kw_iri" "iri") ("kw_bnode" "bnode") ("kw_nonliteral" "nonliteral")))))
-             (_ ;; "constraint" field, or unfielded (LITERAL/datatype/values path's facets)
-              (dolist (fc (shexc-shexj--named-children c))
-                (when (member (treesit-node-type fc) '("string_facet" "numeric_facet"))
-                  (dolist (kv (shexc-shexj--compile-facet ctx fc))
-                    (setq acc (plist-put acc (car kv) (cdr kv))))))))))
+         (dolist (fc (shexc-shexj--named-children c))
+           (pcase (treesit-node-type fc)
+             ((or "irireference" "prefixed_name" "pname_ln" "pname_ns" "datatype")
+              (setq acc (plist-put acc :datatype (shexc-shexj--iri-node-text ctx fc))))
+             ("kw_iri" (setq acc (plist-put acc :nodeKind "iri")))
+             ("kw_bnode" (setq acc (plist-put acc :nodeKind "bnode")))
+             ("kw_nonliteral" (setq acc (plist-put acc :nodeKind "nonliteral")))
+             ((or "string_facet" "numeric_facet")
+              (dolist (kv (shexc-shexj--compile-facet ctx fc))
+                (setq acc (plist-put acc (car kv) (cdr kv)))))
+             ((or "iri_stem_range" "literal_stem_range" "language_stem_range"
+                  "iri_exclusion" "literal_exclusion" "language_exclusion")
+              ;; All members live under this same node_constraint;
+              ;; compile them once, on the first member seen.
+              (unless (plist-member acc :values)
+                (setq acc (plist-put acc :values (shexc-shexj--compile-values ctx c))))))))
         ("kw_literal" (setq any t) (setq acc (plist-put acc :nodeKind "literal")))))
     (when any acc)))
 
@@ -740,22 +752,30 @@ must accumulate onto that one object, confirmed empirically against
 
 (defun shexc-shexj--compile-unary-triple-expr-list (ctx group-node)
   "Walk GROUP-NODE's (group_triple_expr) children in document order,
-pairing each `$<id>' (field `id') with the very next `element' child."
+pairing each `$<id>' (a triple_expr_label) with the very next
+triple-expr child.
+
+Dispatches on node *type*, never `treesit-node-field-name' -- see
+`shexc-shexj--node-constraint-from-atom' for why that function is
+unusable on Emacs 29.  Here it reported a field only for the group's
+first child (and \"element\" even when that child was the `$<id>'
+label), so every element after the first was silently dropped --
+`{ <p> . ; <q> . }' compiled to just <p>'s TripleConstraint, no
+EachOf, confirmed empirically on `extends-closed-or-each-each.shex'."
   (let (result pending-id)
     (dolist (c (shexc-shexj--named-children group-node))
-      (let ((field (treesit-node-field-name c)))
-        (pcase field
-          ("id" (setq pending-id (shexc-shexj--iri-node-text ctx c)))
-          ("element"
-           (let ((compiled
-                  (pcase (treesit-node-type c)
-                    ("triple_constraint" (shexc-shexj--compile-triple-constraint ctx c))
-                    ("bracketed_triple_expr" (shexc-shexj--compile-bracketed-triple-expr ctx c))
-                    ("include" (shexc-shexj--compile-include ctx c)))))
-             (when (and pending-id (consp compiled))
-               (setq compiled (plist-put compiled :id pending-id)))
-             (setq pending-id nil)
-             (push compiled result))))))
+      (pcase (treesit-node-type c)
+        ("triple_expr_label" (setq pending-id (shexc-shexj--iri-node-text ctx c)))
+        ((or "triple_constraint" "bracketed_triple_expr" "include")
+         (let ((compiled
+                (pcase (treesit-node-type c)
+                  ("triple_constraint" (shexc-shexj--compile-triple-constraint ctx c))
+                  ("bracketed_triple_expr" (shexc-shexj--compile-bracketed-triple-expr ctx c))
+                  ("include" (shexc-shexj--compile-include ctx c)))))
+           (when (and pending-id (consp compiled))
+             (setq compiled (plist-put compiled :id pending-id)))
+           (setq pending-id nil)
+           (push compiled result)))))
     (nreverse result)))
 
 (defun shexc-shexj--compile-group-triple-expr (ctx node)
@@ -792,6 +812,23 @@ pairing each `$<id>' (field `id') with the very next `element' child."
          (shape-expr (unless (equal (treesit-node-type shape-expr-node) "kw_external")
                        (shexc-shexj--compile-shape-expr ctx shape-expr-node)))
          (external (equal (treesit-node-type shape-expr-node) "kw_external")))
+    ;; `// annot' / `%act{}' trailing a *top-level* NodeConstraint decl
+    ;; (`<NC> [2 6] // <annot1> 7') parses as an extra node_constraint
+    ;; child of the decl's shape_atom, same as the value_expr case
+    ;; `--gather-trailing-annotations' documents -- but here there is no
+    ;; owning TripleConstraint to hoist to, so they belong on the
+    ;; compiled NodeConstraint itself (confirmed against
+    ;; `2val1refvsAnnot.shex'/`2val1refvsCode.shex').
+    (when (and (consp shape-expr)
+               (equal (treesit-node-type shape-expr-node) "shape_atom"))
+      (setq shape-expr (shexc-shexj--plist-merge-list-prop
+                        shape-expr :annotations
+                        (shexc-shexj--gather-trailing-annotations
+                         ctx shape-expr-node #'shexc-shexj--compile-annotations)))
+      (setq shape-expr (shexc-shexj--plist-merge-list-prop
+                        shape-expr :semActs
+                        (shexc-shexj--gather-trailing-annotations
+                         ctx shape-expr-node #'shexc-shexj--compile-semantic-actions))))
     ;; RESTRICTS targets fold into the same :extends list a Shape would
     ;; carry; when the shape_expr itself is a bare Shape, merge directly,
     ;; otherwise wrap in a ShapeAnd alongside it.
@@ -1207,13 +1244,21 @@ target'."
                      (datatype (shexc-shexj--mark-iri datatype))
                      (values (shexc-shexj--decompile-value-set values))
                      (t nil)))
-         (facets (shexc-shexj--decompile-facets nc)))
-    (cond
-     ((and head-pair (not (string-empty-p facets)))
-      (shexc-shexj--cat head-pair (shexc-shexj--lit (concat " " facets))))
-     (head-pair head-pair)
-     ((not (string-empty-p facets)) (shexc-shexj--lit facets))
-     (t (shexc-shexj--lit "")))))
+         (facets (shexc-shexj--decompile-facets nc))
+         (base (cond
+                ((and head-pair (not (string-empty-p facets)))
+                 (shexc-shexj--cat head-pair (shexc-shexj--lit (concat " " facets))))
+                (head-pair head-pair)
+                ((not (string-empty-p facets)) (shexc-shexj--lit facets))
+                (t (shexc-shexj--lit "")))))
+    ;; A *top-level* NodeConstraint decl can carry its own annotations/
+    ;; semActs (`<NC> [2 6] // <annot1> 7' -- see the trailing-
+    ;; annotation hoisting note in `shexc-shexj--compile-shape-expr-
+    ;; decl'); without emitting them the compile->decompile->recompile
+    ;; round trip drops them.
+    (shexc-shexj--cat base
+                      (shexc-shexj--decompile-annotations (plist-get nc :annotations))
+                      (shexc-shexj--decompile-sem-acts (plist-get nc :semActs)))))
 
 ;; -- shapes and shape expressions ------------------------------------------
 
