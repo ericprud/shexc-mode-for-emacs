@@ -923,13 +923,22 @@ print' itself crash outright with no results shown at all."
            (list (cons node shape)
                  (vector node shape
                          (propertize status 'face (shex-validate-results--status-face status))
-                         ;; rudof's own `reason' strings routinely carry an
-                         ;; embedded/trailing newline (e.g. "Shape passed
-                         ;; ...\n") -- left alone, `tabulated-list-print'
-                         ;; renders that as a literal line break, silently
-                         ;; splitting one logical row across two buffer
-                         ;; lines and breaking line-based row navigation.
-                         (string-trim (replace-regexp-in-string "\n+" " " reason))))))
+                         ;; A multi-line `reason' (rudof draws failure
+                         ;; trees with "└──" continuation lines) keeps its
+                         ;; own line breaks and indentation, starting on
+                         ;; its own line under the row rather than at the
+                         ;; Reason column's far-right offset.  Safe in
+                         ;; `tabulated-list-mode': `tabulated-list-print-entry'
+                         ;; propertizes the whole entry span --
+                         ;; continuation lines included -- with
+                         ;; `tabulated-list-id', so `RET'/highlighting
+                         ;; still resolve the row from any of its lines,
+                         ;; and `g' fully reprints rather than walking
+                         ;; lines.
+                         (let ((reason (string-trim reason)))
+                           (if (string-search "\n" reason)
+                               (concat "\n" reason)
+                             reason))))))
        (car checked)))))
 
 (defun shex-validate-results-goto-node ()
