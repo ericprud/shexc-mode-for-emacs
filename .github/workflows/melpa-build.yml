@@ -37,17 +37,23 @@ jobs:
         with:
           path: repo
           fetch-depth: 0
+      # melpa.org does not run melpa/package-build master; it runs the copy
+      # bundled in melpa/melpa (merged periodically via `make
+      # pull-package-build'), whose API matches the channel config in that
+      # same repo's Makefile.  Using the bundled copy keeps this build in
+      # lockstep with production instead of breaking whenever package-build
+      # master removes something production doesn't use yet.
       - uses: actions/checkout@v4
         with:
-          repository: melpa/package-build
-          path: package-build
+          repository: melpa/melpa
+          path: melpa
       - uses: purcell/setup-emacs@master
         with:
           version: '29.1'
       - name: Build MELPA tarball (unstable channel, i.e. melpa.org)
         run: emacs -Q --batch -l repo/.github/scripts/melpa-build.el
         env:
-          PACKAGE_BUILD_DIR: ${{ github.workspace }}/package-build
+          PACKAGE_BUILD_DIR: ${{ github.workspace }}/melpa/package-build
           REPO_DIR: ${{ github.workspace }}/repo
           OUT_DIR: ${{ github.workspace }}/build-out
           CHANNEL: unstable
@@ -120,15 +126,15 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@v4
         with:
-          repository: melpa/package-build
-          path: package-build
+          repository: melpa/melpa
+          path: melpa
       - uses: purcell/setup-emacs@master
         with:
           version: '29.1'
       - name: Build MELPA tarball (stable channel, i.e. stable.melpa.org)
         run: emacs -Q --batch -l repo/.github/scripts/melpa-build.el
         env:
-          PACKAGE_BUILD_DIR: ${{ github.workspace }}/package-build
+          PACKAGE_BUILD_DIR: ${{ github.workspace }}/melpa/package-build
           REPO_DIR: ${{ github.workspace }}/repo
           OUT_DIR: ${{ github.workspace }}/build-out-stable
           CHANNEL: stable

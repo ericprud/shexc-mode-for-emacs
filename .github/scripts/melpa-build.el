@@ -27,7 +27,12 @@
   (add-to-list 'load-path package-build-dir)
   (require 'package-build)
 
-  (setq package-build-build-function 'package-build--build-multi-file-package)
+  ;; melpa/melpa's Makefile still sets this, but package-build 5.x removed
+  ;; the function in favor of the default `package-build--build-package'
+  ;; (same tarball layout for multi-file packages).  Guard so this keeps
+  ;; working after melpa merges a post-5.0 package-build and drops the setq.
+  (when (fboundp 'package-build--build-multi-file-package)
+    (setq package-build-build-function 'package-build--build-multi-file-package))
   (cond
    ((equal channel "unstable")
     (setq package-build-releases nil)
